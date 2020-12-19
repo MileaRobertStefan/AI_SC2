@@ -10,7 +10,12 @@ class ZergAI(sc2.BotAI):
         self.first_expansion_done = False
         self.save_for_first_expansion = False
         self.save_for_spawning_pool = False
-        self.ARMY_IDS = {ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK}
+        self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA]
+        self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
+        self.FREQUENCES = [20, 10, 15, 5, 10]
+
+        self.unit_in_queue = False
+        self.selected_unit_index_in_queue = None
 
     async def on_step(self, iteration):
         await self.update_state()
@@ -24,11 +29,11 @@ class ZergAI(sc2.BotAI):
                 await self.build_drones()
             await self.build_extractors()
             await self.build_building(SPAWNINGPOOL, self.own_bases[0])
-            await self.build_building(BANELINGNEST, self.own_bases[0])
+            await self.build_building(BANELINGNEST, self.own_bases[0], start_time=4*60)
+            await self.build_building(ROACHWARREN, self.own_bases[0], start_time=4*60)
             await self.build_queens()
             await self.queens_inject()
-            await self.build_units(LARVA, ZERGLING)
-            await self.build_units(ZERGLING, BANELING)
+            await self.build_units_probabilistic()
             await self.attack_enemy()
 
     async def update_state(self):
@@ -76,13 +81,22 @@ class ZergAI(sc2.BotAI):
         supply_gap = [5, 12, 18]
         pending_ideal = [1, 2, 2]
 
+        if self.supply_cap == 200:
+            return
+
         if self.supply_left < supply_gap[self.era]:
             larvae = self.units(LARVA).ready
             if larvae.exists and self.already_pending(OVERLORD) < pending_ideal[self.era] and self.can_afford(OVERLORD):
                 await self.do(larvae.random.train(OVERLORD))
 
-    async def build_building(self, building_id, chosen_base, required_amount=1):
+    async def build_building(self, building_id, chosen_base, required_amount=1, start_time=0):
         if not (self.already_pending(HATCHERY) or self.nr_bases >= 2):
+            return
+
+        if self.time < start_time:
+            return
+
+        if building_id == ROACHWARREN and self.units(SPAWNINGPOOL).ready.amount < 1:
             return
 
         if self.can_afford(building_id) and self.already_pending(building_id) \
@@ -178,22 +192,68 @@ class ZergAI(sc2.BotAI):
 
     async def build_units(self, from_id, morph_id):
         if self.nr_bases < 2:
-            return
+            return False
 
         to_evolve_units = self.units(from_id)
         if to_evolve_units.amount == 0:
-            return
+            return False
 
         if self.can_afford(morph_id) and to_evolve_units.exists:
             await self.do(to_evolve_units.random.train(morph_id))
+            return True
 
     async def attack_enemy(self):
         army_units = self.units.of_type(self.ARMY_IDS)
 
-        if army_units.amount < 100:
+        if self.supply_army < 70:
             return
 
         target = self.known_enemy_structures.random_or(self.enemy_start_locations[0]).position
 
         for creature in army_units.idle:
             await self.do(creature.attack(target))
+
+    async def build_units_probabilistic(self):
+        if self.unit_in_queue:
+            i = self.selected_unit_index_in_queue
+            morph_from_id = self.MORPH_FROM_IDS[i]
+            army_id = self.ARMY_IDS[i]
+            if await self.build_units(morph_from_id, army_id):
+                self.unit_in_queue = False
+                self.selected_unit_index_in_queue = None
+
+        else:
+            # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
+
+            can_make = [False for x in self.FREQUENCES]
+            if self.units(SPAWNINGPOOL).ready.amount > 0:
+                can_make[0] = True
+
+            if self.units(BANELINGNEST).ready.amount > 0 and self.units(ZERGLING).amount > 0:
+                can_make[1] = True
+
+            if self.units(ROACHWARREN).ready.amount > 0:
+                can_make[2] = True
+                if self.units(ROACH).amount > 0:
+                    can_make[3] = True
+
+            if self.units(HYDRALISKDEN).ready.amount > 0:
+                can_make[4] = True
+
+            freq_sum = 0
+            for i, freq in enumerate(self.FREQUENCES):
+                if can_make[i]:
+                    freq_sum += freq
+
+            probabilities = [0.0 for x in self.FREQUENCES]
+            for i, freq in enumerate(self.FREQUENCES):
+                if can_make[i]:
+                    probabilities[i] = freq / freq_sum
+
+            if np.sum(probabilities) == 0:
+                return
+
+            index = np.random.choice(np.arange(0, len(probabilities)), p=probabilities)
+
+            self.unit_in_queue = True
+            self.selected_unit_index_in_queue = index
