@@ -10,6 +10,7 @@ class ZergAI(sc2.BotAI):
         self.first_expansion_done = False
         self.save_for_first_expansion = False
         self.save_for_spawning_pool = False
+        self.ARMY_IDS = {ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK}
 
     async def on_step(self, iteration):
         await self.update_state()
@@ -23,9 +24,11 @@ class ZergAI(sc2.BotAI):
                 await self.build_drones()
             await self.build_extractors()
             await self.build_building(SPAWNINGPOOL, self.own_bases[0])
+            await self.build_building(BANELINGNEST, self.own_bases[0])
             await self.build_queens()
             await self.queens_inject()
-            await self.build_units(ZERGLING)
+            await self.build_units(LARVA, ZERGLING)
+            await self.build_units(ZERGLING, BANELING)
             await self.attack_enemy()
 
     async def update_state(self):
@@ -79,7 +82,7 @@ class ZergAI(sc2.BotAI):
                 await self.do(larvae.random.train(OVERLORD))
 
     async def build_building(self, building_id, chosen_base, required_amount=1):
-        if building_id == SPAWNINGPOOL and (not self.already_pending(HATCHERY) or self.nr_bases >= 2):
+        if not (self.already_pending(HATCHERY) or self.nr_bases >= 2):
             return
 
         if self.can_afford(building_id) and self.already_pending(building_id) \
@@ -173,20 +176,24 @@ class ZergAI(sc2.BotAI):
         if nr_current_bases < (self.time / 30) and self.can_afford(HATCHERY):
             await self.expand_now()
 
-    async def build_units(self, unit_id):
+    async def build_units(self, from_id, morph_id):
         if self.nr_bases < 2:
             return
 
-        larvae = self.units(LARVA).ready
-
-        if self.can_afford(unit_id) and larvae.exists:
-            await self.do(larvae.random.train(unit_id))
-
-    async def attack_enemy(self):
-        target = self.known_enemy_structures.random_or(self.enemy_start_locations[0]).position
-
-        if self.units(ZERGLING).amount < 20:
+        to_evolve_units = self.units(from_id)
+        if to_evolve_units.amount == 0:
             return
 
-        for zl in self.units(ZERGLING).idle:
-            await self.do(zl.attack(target))
+        if self.can_afford(morph_id) and to_evolve_units.exists:
+            await self.do(to_evolve_units.random.train(morph_id))
+
+    async def attack_enemy(self):
+        army_units = self.units.of_type(self.ARMY_IDS)
+
+        if army_units.amount < 100:
+            return
+
+        target = self.known_enemy_structures.random_or(self.enemy_start_locations[0]).position
+
+        for creature in army_units.idle:
+            await self.do(creature.attack(target))

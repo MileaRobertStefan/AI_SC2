@@ -1,3 +1,5 @@
+from all_imports_packages import *
+
 MAP_NAME = "AcropolisLE"
 
 EARLY_GAME = 0
