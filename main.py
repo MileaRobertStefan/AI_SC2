@@ -12,7 +12,6 @@ class SentdeBot(sc2.BotAI):
         await self.build_pylons()  # pylons are protoss supply buildings
         await self.expand()
 
-
     async def build_workers(self):
         # nexus = command center
         for nexus in self.units(NEXUS).ready.noqueue:
