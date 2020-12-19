@@ -88,7 +88,6 @@ class SentdeBot(sc2.BotAI):
         aggressive_units = {STALKER: [15, 5],
                             VOIDRAY: [8, 3]}
 
-
         for UNIT in aggressive_units:
             if self.units(UNIT).amount > aggressive_units[UNIT][0] and self.units(UNIT).amount > aggressive_units[UNIT][1]:
                 for s in self.units(UNIT).idle:
