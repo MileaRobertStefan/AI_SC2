@@ -1,6 +1,30 @@
 from all_imports_packages import *
 
 
+def get_positions_around_unit(unit, min_range=0, max_range=500, step_size=1, location_amount=32):
+    loc = unit.position.to2
+
+    positions = []
+    for alpha in range(location_amount):
+        for distance in range(min_range, max_range + 1, step_size):
+            positions.append(
+                Point2(
+                    (
+                        loc.x + distance * math.cos(math.pi * 2 * alpha / location_amount),
+                        loc.y + distance * math.sin(math.pi * 2 * alpha / location_amount)
+                    )
+                )
+            )
+    return positions
+
+
+def get_closest_distance(locations, point):
+    distances = []
+    for loc in locations:
+        distances.append(point.distance_to(loc))
+    return min(distances)
+
+
 class ZergAI(sc2.BotAI):
     def __init__(self):
         self.MAX_WORKERS = 60
@@ -13,30 +37,42 @@ class ZergAI(sc2.BotAI):
         self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA]
         self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
         self.FREQUENCES = [20, 10, 15, 5, 10]
+        self.expansion_locations_list = []
+
+        self.positions_with_creep = []
+        self.positions_without_creep = []
         # self.FREQUENCES = [0, 0, 1, 100, 0]
 
         self.build_priorities = {
-            DRONE:             0,
-            "ARMY":            0,
-            SPAWNINGPOOL:      0,
-            ROACHWARREN:       0,
-            BANELINGNEST:      0,
-            "EXPAND":          0,
-            OVERLORD:          0,
-            QUEEN:             0,
-            EVOLUTIONCHAMBER:  0,
-            LAIR:              0,
-            HYDRALISKDEN:      0,
-            "UPGRADES":        0,
+            DRONE: 0,
+            "ARMY": 0,
+            SPAWNINGPOOL: 0,
+            ROACHWARREN: 0,
+            BANELINGNEST: 0,
+            "EXPAND": 0,
+            OVERLORD: 0,
+            QUEEN: 0,
+            EVOLUTIONCHAMBER: 0,
+            LAIR: 0,
+            HYDRALISKDEN: 0,
+            "UPGRADES": 0,
         }
 
         self.unit_in_queue = False
         self.selected_unit_index_in_queue = None
 
+        self.creep_target_distance = 15
+        self.used_creep_tumors = set()
+
     def get_priority(self, unit_id):
         chance = np.random.random_sample()
         required_chance = 2 ** (-self.build_priorities[unit_id])
         return chance < required_chance
+
+    def on_start(self):
+        self.expansion_locations_list = []
+        for el in self.expansion_locations:
+            self.expansion_locations_list.append(el)
 
     async def on_step(self, iteration):
         await self.update_state()
@@ -58,16 +94,18 @@ class ZergAI(sc2.BotAI):
         await self.build_building(SPAWNINGPOOL, self.own_bases[0])
         await self.build_building(BANELINGNEST, self.own_bases[0], start_time=int(4.5 * 60))
         await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(3.5 * 60))
-        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=3 * 60, required_amount=self.era+1)
+        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=3 * 60, required_amount=self.era + 1)
         await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
         await self.all_upgrades(EVOLUTIONCHAMBER)
-        await self.build_building(LAIR, self.own_bases[0], start_time=5*60)
+        await self.build_building(LAIR, self.own_bases[0], start_time=5 * 60)
 
     async def handle_micro(self):
         await self.queens_inject()
         await self.attack_enemy()
         await self.army_cast_skills()
         await self.building_cancel_micro()
+        await self.expand_creep_by_queen()
+        await self.expand_creep_by_tumor()
 
     async def update_state(self):
         if self.time < 4 * 60:
@@ -241,7 +279,7 @@ class ZergAI(sc2.BotAI):
         if len(self.units(SPAWNINGPOOL).ready) == 0:
             return
 
-        nr_demanded_queens = [self.nr_bases, self.nr_bases + 2, self.nr_bases * 1.5 + 2]
+        nr_demanded_queens = [self.nr_bases + 1, self.nr_bases * 1.2 + 3, self.nr_bases * 1.5 + 3]
         nr_queens = self.units(QUEEN).ready.amount
 
         for base in self.own_bases:
@@ -338,7 +376,7 @@ class ZergAI(sc2.BotAI):
             else:
                 # If there are no threats
                 target = self.game_info.map_center
-                for creature in army_units.further_than(10, self.game_info.map_center):
+                for creature in army_units.idle.further_than(10, self.game_info.map_center):
                     await self.do(creature.attack(target))
 
             return
@@ -447,4 +485,121 @@ class ZergAI(sc2.BotAI):
         ):
             await self.do(building(CANCEL))
 
+    async def update_creep_overage(self, step_size=None):
+        if step_size is None:
+            step_size = self.creep_target_distance
+        ability = self._game_data.abilities[ZERGBUILD_CREEPTUMOR.value]
 
+        positions = [Point2((x, y)) \
+                     for x in range(self._game_info.playable_area[0] + step_size,
+                                    self._game_info.playable_area[0] + self._game_info.playable_area[2] - step_size,
+                                    step_size) \
+                     for y in range(self._game_info.playable_area[1] + step_size,
+                                    self._game_info.playable_area[1] + self._game_info.playable_area[3] - step_size,
+                                    step_size)]
+
+        valid_placements = await self._client.query_building_placement(ability, positions)
+        success_results = [
+            ActionResult.Success,  # tumor can be placed there, so there must be creep
+            ActionResult.CantBuildLocationInvalid,  # location is used up by another building or doodad,
+            ActionResult.CantBuildTooFarFromCreepSource,  # - just outside of range of creep
+        ]
+        self.positions_with_creep = [p for valid, p in zip(valid_placements, positions) if
+                                     valid in success_results]
+
+        self.positions_without_creep = [p for index, p in enumerate(positions) if
+                                        valid_placements[index] not in success_results]
+
+        self.positions_without_creep = [p for valid, p in zip(valid_placements, positions) if
+                                        valid not in success_results]
+
+        return self.positions_with_creep, self.positions_without_creep
+
+    async def find_creep_plant_locations(self, casting_unit, min_range=0, max_range=500, step_size=1,
+                                         location_amount=32):
+
+        ability = self._game_data.abilities[ZERGBUILD_CREEPTUMOR.value]
+
+        positions = get_positions_around_unit(casting_unit, min_range, max_range,
+                                              step_size, location_amount)
+
+        positions = [pos for pos in positions if get_closest_distance(self.expansion_locations_list, pos) > 4]
+
+        valid_placements = await self._client.query_building_placement(ability, positions)
+
+        valid_placements = [p for index, p in enumerate(positions) if valid_placements[index] == ActionResult.Success]
+
+        all_tumors = self.units(CREEPTUMOR) | self.units(CREEPTUMORBURROWED) | self.units(CREEPTUMORQUEEN)
+        unused_tumors = all_tumors.filter(lambda x: x.tag not in self.used_creep_tumors)
+        if casting_unit in all_tumors:
+            unused_tumors = unused_tumors.filter(lambda x: x.tag != casting_unit.tag)
+
+        if len(unused_tumors) > 0:
+            valid_placements = [x for x in valid_placements if x.distance_to(unused_tumors.closest_to(x)) >= 10]
+
+        valid_placements.sort(key=lambda x: x.distance_to(x.closest(self.positions_without_creep)), reverse=False)
+
+        if len(valid_placements) > 0:
+            return valid_placements
+
+        return None
+
+    async def expand_creep_by_queen(self):
+        queens = self.units(QUEEN).idle.filter(
+            lambda q: q.energy >= 25 and q.is_idle
+        )
+        if queens.amount == 0:
+            return
+
+        await self.update_creep_overage()
+
+        for queen in queens:
+            locations = await self.find_creep_plant_locations(
+                queen, min_range=3, max_range=30, step_size=2, location_amount=16
+            )
+
+            if locations is None:
+                continue
+
+            for loc in locations:
+                err = await self.do(queen(BUILD_CREEPTUMOR_QUEEN, loc))
+                if not err:
+                    break
+
+    async def expand_creep_by_tumor(self):
+        all_tumors = self.units(CREEPTUMOR) | self.units(CREEPTUMORBURROWED) | self.units(CREEPTUMORQUEEN)
+
+        if all_tumors.amount == 0:
+            return
+
+        unused_tumors = all_tumors.filter(lambda x: x.tag not in self.used_creep_tumors)
+
+        if unused_tumors.amount == 0:
+            return
+
+        await self.update_creep_overage()
+
+        new_tumors_positions = set()
+        for tumor in unused_tumors:
+            tumors_close_to_tumor = [x for x in new_tumors_positions if tumor.distance_to(Point2(x)) < 8]
+
+            if len(tumors_close_to_tumor) > 0:
+                continue
+
+            abilities = await self.get_available_abilities(tumor)
+            if AbilityId.BUILD_CREEPTUMOR_TUMOR not in abilities:
+                continue
+
+            locations = await self.find_creep_plant_locations(
+                tumor, min_range=10, max_range=10, location_amount=32
+            )
+
+            if locations is None:
+                continue
+
+            for loc in locations:
+                err = await self.do(tumor(BUILD_CREEPTUMOR_TUMOR, loc))
+                if not err:
+                    new_tumors_positions.add((tumor.position.x, tumor.position.y))
+                    self.used_creep_tumors.add(tumor.tag)
+                    break
