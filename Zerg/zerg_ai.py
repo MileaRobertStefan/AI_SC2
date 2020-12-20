@@ -3,7 +3,7 @@ from all_imports_packages import *
 
 class ZergAI(sc2.BotAI):
     def __init__(self):
-        self.MAX_WORKERS = 50
+        self.MAX_WORKERS = 60
         self.era = EARLY_GAME
         self.own_bases = []
         self.nr_bases = 0
@@ -13,6 +13,7 @@ class ZergAI(sc2.BotAI):
         self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA]
         self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
         self.FREQUENCES = [20, 10, 15, 5, 10]
+        # self.FREQUENCES = [0, 0, 1, 100, 0]
 
         self.unit_in_queue = False
         self.selected_unit_index_in_queue = None
@@ -27,14 +28,22 @@ class ZergAI(sc2.BotAI):
             if not self.save_for_first_expansion and not self.save_for_spawning_pool:
                 await self.build_overlords()
                 await self.build_drones()
-            await self.build_extractors()
-            await self.build_building(SPAWNINGPOOL, self.own_bases[0])
-            await self.build_building(BANELINGNEST, self.own_bases[0], start_time=4*60)
-            await self.build_building(ROACHWARREN, self.own_bases[0], start_time=4*60)
+            await self.build_buildings()
             await self.build_queens()
-            await self.queens_inject()
             await self.build_units_probabilistic()
-            await self.attack_enemy()
+            await self.handle_micro()
+
+    async def build_buildings(self):
+        await self.build_extractors()
+        await self.build_building(SPAWNINGPOOL, self.own_bases[0])
+        await self.build_building(BANELINGNEST, self.own_bases[0], start_time=4 * 60 + 30)
+        await self.build_building(ROACHWARREN, self.own_bases[0], start_time=3 * 60 + 30)
+
+    async def handle_micro(self):
+        await self.queens_inject()
+        await self.attack_enemy()
+        await self.army_cast_skills()
+        await self.building_cancel_micro()
 
     async def update_state(self):
         if self.time < 4 * 60:
@@ -67,11 +76,13 @@ class ZergAI(sc2.BotAI):
         # await self.chat_send(str(self.save_for_first_expansion) + " | " + str(self.save_for_spawning_pool))
 
     async def build_drones(self):
-        nr_bases = len(self.own_bases)
         nr_drones = len(self.units(DRONE))
-        nr_workers_per_base = 8 * 2 + 2 * 3
 
-        if nr_drones + self.already_pending(DRONE) < nr_bases * nr_workers_per_base and nr_drones < self.MAX_WORKERS:
+        nr_ideal_workers = 0
+        for base in self.units(HATCHERY).ready | self.units(LAIR) | self.units(HIVE):
+            nr_ideal_workers += base.ideal_harvesters
+
+        if nr_drones + self.already_pending(DRONE) < nr_ideal_workers and nr_drones < self.MAX_WORKERS:
             larvae = self.units(LARVA).ready
 
             if self.can_afford(DRONE) and larvae.exists:
@@ -176,21 +187,28 @@ class ZergAI(sc2.BotAI):
             self.save_for_first_expansion = True
 
             if self.can_afford(HATCHERY):
-                await self.expand_now()
+                await self.expand_now(max_distance=0)
 
     async def expand(self):
         nr_drones = len(self.units(DRONE))
-        nr_workers_per_base = 8 * 2 + 2 * 3
-        nr_current_bases = self.nr_bases + self.already_pending(HATCHERY)
-        nr_desired_drones = nr_current_bases * nr_workers_per_base * 0.7
 
-        if NR_EARLY_OPTIMAL_BASES <= nr_current_bases and nr_drones < nr_desired_drones:
+        nr_ideal_workers = 0
+        for base in self.units(HATCHERY).ready | self.units(LAIR) | self.units(HIVE):
+            nr_ideal_workers += base.ideal_harvesters
+        nr_desired_drones = nr_ideal_workers * 0.7
+
+        nr_bases = (self.units(HATCHERY) | self.units(LAIR) | self.units(HIVE)).amount
+
+        if nr_bases > NR_EARLY_OPTIMAL_BASES or nr_drones < nr_desired_drones:
             return
 
-        if nr_current_bases < (self.time / 30) and self.can_afford(HATCHERY):
-            await self.expand_now()
+        if nr_bases < (self.time / 80) and self.can_afford(HATCHERY):
+            await self.expand_now(max_distance=0)
 
-    async def build_units(self, from_id, morph_id):
+    async def build_units(self, from_id, morph_id, time=0):
+        if self.time < time:
+            return False
+
         if self.nr_bases < 2:
             return False
 
@@ -205,7 +223,9 @@ class ZergAI(sc2.BotAI):
     async def attack_enemy(self):
         army_units = self.units.of_type(self.ARMY_IDS)
 
-        if self.supply_army < 70:
+        if self.supply_army - self.units(QUEEN).amount*2 < 70:
+            for creature in army_units.idle.further_than(6, self.game_info.map_center):
+                await self.do(creature.attack(self.game_info.map_center))
             return
 
         target = self.known_enemy_structures.random_or(self.enemy_start_locations[0]).position
@@ -245,6 +265,9 @@ class ZergAI(sc2.BotAI):
                 if can_make[i]:
                     freq_sum += freq
 
+            if freq_sum == 0:
+                return
+
             probabilities = [0.0 for x in self.FREQUENCES]
             for i, freq in enumerate(self.FREQUENCES):
                 if can_make[i]:
@@ -257,3 +280,53 @@ class ZergAI(sc2.BotAI):
 
             self.unit_in_queue = True
             self.selected_unit_index_in_queue = index
+
+    async def army_cast_skills(self):
+        if self.units(RAVAGER).amount:
+            await self.ravager_corrosive_bile()
+
+    async def ravager_corrosive_bile(self):
+        for ravager in self.units(RAVAGER):
+            abilities = await self.get_available_abilities(ravager)
+            if EFFECT_CORROSIVEBILE not in abilities:
+                return
+
+            possible_targets = self.known_enemy_units.closer_than(9, ravager)
+            if possible_targets.amount == 0:
+                return
+
+            target = possible_targets.closest_to(ravager)
+            if target is None:
+                return
+
+            await self.do(ravager(EFFECT_CORROSIVEBILE, target.position))
+
+    async def general_upgrade(self, time):
+        # useless_abilities = {CANCEL_BUILDINPROGRESS, CANCEL_QUEUE5, RALLY_HATCHERY_UNITS,
+        #                      RALLY_HATCHERY_WORKERS, SMART, TRAINQUEEN_QUEEN}
+
+        buildings = self.units({SPAWNINGPOOL, BANELINGNEST, ROACHWARREN, HATCHERY, LAIR, HIVE})
+        for b in buildings:
+            abilities = await self.get_available_abilities(b)
+
+            for ab in abilities:
+                if "RESEARCH" in str(ab):
+                    # print(ab)
+                    await self.upgrade(b, ab, time)
+
+    async def upgrade(self, building, research_id, time):
+        if self.time < time:
+            return
+
+        abilities = await self.get_available_abilities(building)
+        if research_id in abilities:
+            if self.can_afford(research_id) and building.is_idle:
+                await self.do(building(research_id))
+
+    async def building_cancel_micro(self):
+        for building in self.units.structure.not_ready.filter(
+                lambda x: x.health_percentage + 0.05 < x.build_progress and x.health_percentage < 0.1
+        ):
+            await self.do(building(CANCEL))
+
+

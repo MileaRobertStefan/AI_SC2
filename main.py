@@ -5,7 +5,7 @@ from all_imports_ai import *
 def test_game(AI, race, map, realtime=False):
     run_game(maps.get(map), [
         Bot(race, AI),
-        Computer(Race.Protoss, Difficulty.VeryHard)
+        Computer(Race.Terran, Difficulty.VeryHard)
     ], realtime=realtime)
 
 
