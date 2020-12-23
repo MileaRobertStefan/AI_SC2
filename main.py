@@ -7,11 +7,11 @@ class Mihui(sc2.BotAI):
         pass
 
 
-def test_game(AI, race, map, realtime=True):
+def test_game(AI, race, map, realtime=False):
     run_game(maps.get(map), [
-        Bot(Race.Terran, Mihui()),
+        # Bot(Race.Terran, Mihui()),
         Bot(race, AI),
-        # Computer(Race.Protoss, Difficulty.VeryHard)
+        Computer(Race.Protoss, Difficulty.VeryHard)
     ], realtime=realtime)
 
 

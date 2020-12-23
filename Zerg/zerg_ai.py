@@ -588,9 +588,14 @@ class ZergAI(sc2.BotAI):
                 continue
 
             for loc in locations:
-                err = await self.do(queen(BUILD_CREEPTUMOR_QUEEN, loc))
-                if not err:
-                    break
+
+                ability = self._game_data.abilities[ZERGBUILD_CREEPTUMOR.value]
+                valid_placements = await self._client.query_building_placement(ability, [loc])
+                if valid_placements[0] != ActionResult.Success:
+                    continue
+
+                await self.do(queen(BUILD_CREEPTUMOR_QUEEN, loc))
+                break
 
     async def expand_creep_by_tumor(self):
         all_tumors = self.units(CREEPTUMOR) | self.units(CREEPTUMORBURROWED) | self.units(CREEPTUMORQUEEN)
@@ -624,11 +629,16 @@ class ZergAI(sc2.BotAI):
                 continue
 
             for loc in locations:
-                err = await self.do(tumor(BUILD_CREEPTUMOR_TUMOR, loc))
-                if not err:
-                    new_tumors_positions.add((tumor.position.x, tumor.position.y))
-                    self.used_creep_tumors.add(tumor.tag)
-                    break
+
+                ability = self._game_data.abilities[ZERGBUILD_CREEPTUMOR.value]
+                valid_placements = await self._client.query_building_placement(ability, [loc])
+                if valid_placements[0] != ActionResult.Success:
+                    continue
+
+                await self.do(tumor(BUILD_CREEPTUMOR_TUMOR, loc))
+                new_tumors_positions.add((tumor.position.x, tumor.position.y))
+                self.used_creep_tumors.add(tumor.tag)
+                break
 
     def better_army(self, ally_army, enemy_army):
         score_ally = 0
@@ -641,7 +651,7 @@ class ZergAI(sc2.BotAI):
             if enemy.type_id in self.unit_table.unit_power:
                 score_enemy += self.unit_table.unit_power[enemy.type_id]
 
-        return score_ally > score_enemy * 1.2
+        return score_ally > score_enemy
 
     async def micro_in_battle(self):
         ally_units = self.units.of_type(self.ARMY_IDS)
