@@ -1,4 +1,5 @@
 from all_imports_packages import *
+from Zerg.unit_table import *
 
 
 def get_positions_around_unit(unit, min_range=0, max_range=500, step_size=1, location_amount=32):
@@ -25,6 +26,23 @@ def get_closest_distance(locations, point):
     return min(distances)
 
 
+def neighbors_4(position, distance=1):
+    p = position
+    d = distance
+    return {Point2((p.x - d, p.y)), Point2((p.x + d, p.y)), Point2((p.x, p.y - d)), Point2((p.x, p.y + d))}
+
+
+def neighbors_8(position, distance=1):
+    p = position
+    d = distance
+    return neighbors_4(position, distance) | {
+        Point2((p.x - d, p.y - d)),
+        Point2((p.x - d, p.y + d)),
+        Point2((p.x + d, p.y - d)),
+        Point2((p.x + d, p.y + d)),
+    }
+
+
 class ZergAI(sc2.BotAI):
     def __init__(self):
         self.MAX_WORKERS = 60
@@ -36,7 +54,8 @@ class ZergAI(sc2.BotAI):
         self.save_for_spawning_pool = False
         self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA]
         self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
-        self.FREQUENCES = [20, 10, 15, 5, 10]
+        self.ARMY_IDS_RANGED = [ROACH, RAVAGER, HYDRALISK]
+        self.FREQUENCES = [1, 1, 20, 3, 10]
         self.expansion_locations_list = []
 
         self.positions_with_creep = []
@@ -63,6 +82,8 @@ class ZergAI(sc2.BotAI):
 
         self.creep_target_distance = 15
         self.used_creep_tumors = set()
+
+        self.unit_table = UnitTable()
 
     def get_priority(self, unit_id):
         chance = np.random.random_sample()
@@ -94,7 +115,7 @@ class ZergAI(sc2.BotAI):
         await self.build_building(SPAWNINGPOOL, self.own_bases[0])
         await self.build_building(BANELINGNEST, self.own_bases[0], start_time=int(4.5 * 60))
         await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(3.5 * 60))
-        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=3 * 60, required_amount=self.era + 1)
+        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=int(4.5 * 60), required_amount=self.era)
         await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
         await self.all_upgrades(EVOLUTIONCHAMBER)
         await self.build_building(LAIR, self.own_bases[0], start_time=5 * 60)
@@ -102,10 +123,11 @@ class ZergAI(sc2.BotAI):
     async def handle_micro(self):
         await self.queens_inject()
         await self.attack_enemy()
-        await self.army_cast_skills()
         await self.building_cancel_micro()
         await self.expand_creep_by_queen()
         await self.expand_creep_by_tumor()
+        await self.micro_in_battle()
+        await self.army_cast_skills()
 
     async def update_state(self):
         if self.time < 4 * 60:
@@ -148,11 +170,11 @@ class ZergAI(sc2.BotAI):
                 EVOLUTIONCHAMBER: 3,
                 LAIR: 5,
                 HYDRALISKDEN: 9,
-                "UPGRADES": 1,
+                "UPGRADES": 4,
             }
         elif self.era == MID_GAME:
             self.build_priorities = {
-                DRONE: 3,
+                DRONE: 1,
                 "ARMY": 2,
                 SPAWNINGPOOL: 0,
                 ROACHWARREN: 0,
@@ -167,7 +189,7 @@ class ZergAI(sc2.BotAI):
             }
         else:
             self.build_priorities = {
-                DRONE: 3,
+                DRONE: 2,
                 "ARMY": 0,
                 SPAWNINGPOOL: 0,
                 ROACHWARREN: 0,
@@ -180,6 +202,10 @@ class ZergAI(sc2.BotAI):
                 HYDRALISKDEN: 0,
                 "UPGRADES": 0,
             }
+
+        if self.units(DRONE).amount < 50 and self.era >= MID_GAME:
+            self.build_priorities[DRONE] = 0
+            self.build_priorities["ARMY"] = 2
 
         # await self.chat_send(str(self.save_for_first_expansion) + " | " + str(self.save_for_spawning_pool))
 
@@ -279,7 +305,7 @@ class ZergAI(sc2.BotAI):
         if len(self.units(SPAWNINGPOOL).ready) == 0:
             return
 
-        nr_demanded_queens = [self.nr_bases + 1, self.nr_bases * 1.2 + 3, self.nr_bases * 1.5 + 3]
+        nr_demanded_queens = [self.nr_bases + 1, self.nr_bases * 1 + 2, self.nr_bases * 1 + 2]
         nr_queens = self.units(QUEEN).ready.amount
 
         for base in self.own_bases:
@@ -356,7 +382,7 @@ class ZergAI(sc2.BotAI):
     async def attack_enemy(self):
         army_units = self.units.of_type(self.ARMY_IDS)
 
-        if self.supply_army - self.units(QUEEN).amount * 2 < 70:
+        if self.supply_army - self.units(QUEEN).amount * 2 < 1:
             target = self.known_enemy_units
             if len(target):
                 target = target.random.position
@@ -603,3 +629,116 @@ class ZergAI(sc2.BotAI):
                     new_tumors_positions.add((tumor.position.x, tumor.position.y))
                     self.used_creep_tumors.add(tumor.tag)
                     break
+
+    def better_army(self, ally_army, enemy_army):
+        score_ally = 0
+        for ally in ally_army:
+            if ally.type_id in self.unit_table.unit_power:
+                score_ally += self.unit_table.unit_power[ally.type_id]
+
+        score_enemy = 0
+        for enemy in enemy_army:
+            if enemy.type_id in self.unit_table.unit_power:
+                score_enemy += self.unit_table.unit_power[enemy.type_id]
+
+        return score_ally > score_enemy * 1.2
+
+    async def micro_in_battle(self):
+        ally_units = self.units.of_type(self.ARMY_IDS)
+
+        if ally_units.amount == 0:
+            return
+
+        enemies = self.known_enemy_units
+        enemy_attackers = enemies.filter(lambda unit: unit.can_attack)
+
+        if enemy_attackers.amount == 0:
+            return
+
+        for ally in ally_units:
+            enemy_attackers_close = enemy_attackers.filter(
+                lambda unit: unit.distance_to(ally) < 15
+            )
+
+            if enemy_attackers_close.amount == 0:
+                continue
+
+            ally_army_close = ally_units.filter(
+                lambda unit: unit.distance_to(ally) < 15
+            )
+
+            # Retreat
+            # if ally.health_percentage < 2/5 and ally.type_id in self.ARMY_IDS_RANGED:
+            if not self.better_army(ally_army_close, enemy_attackers_close) and \
+                    self.supply_army < 100 and self.minerals < 1000:
+                retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
+
+                # Filter points that are pathable
+                retreat_points = {x for x in retreat_points if self.in_pathing_grid(x)}
+
+                if not retreat_points:
+                    continue
+
+                closest_enemy = enemy_attackers_close.closest_to(ally)
+                retreat_point = closest_enemy.position.furthest(retreat_points)
+                await self.do(ally.move(retreat_point))
+                continue
+
+            # Attack
+            enemy_ground_unit_targets = enemies.filter(
+                lambda unit: ally.target_in_range(unit) and not unit.is_flying
+            )
+
+            enemy_flying_unit_targets = enemies.filter(
+                lambda unit: ally.target_in_range(unit) and unit.is_flying
+            )
+
+            if ally.can_attack_both:
+                enemy_units_target = enemy_ground_unit_targets | enemy_flying_unit_targets
+            elif ally.can_attack_ground:
+                enemy_units_target = enemy_ground_unit_targets
+            elif ally.can_attack_air:
+                enemy_units_target = enemy_flying_unit_targets
+            else:
+                enemy_units_target = None
+
+            # Can attack
+            if ally.weapon_cooldown == 0 and enemy_units_target is not None and enemy_units_target.amount != 0:
+                attackable_unit_targets = enemy_units_target.filter(lambda unit: unit.can_be_attacked)
+                if attackable_unit_targets.amount != 0:
+                    lowest_unit_target = attackable_unit_targets.sorted(
+                        lambda unit: unit.health_percentage and unit.is_structure
+                    )[0]
+                    await self.do(ally.attack(lowest_unit_target))
+                    continue
+
+            # Kite Back
+            if ally.is_flying:
+                enemy_attackers_very_close = enemies.filter(
+                    lambda unit: unit.can_attack_air and ally.target_in_range(unit, bonus_distance=-1)
+                )
+            else:
+                enemy_attackers_very_close = enemies.filter(
+                    lambda unit: unit.can_attack_ground and ally.target_in_range(unit, bonus_distance=-1)
+                )
+
+            if ally.weapon_cooldown != 0 and enemy_attackers_very_close.amount != 0:
+                retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
+                retreat_points = {x for x in retreat_points if self.in_pathing_grid(x)}
+
+                if not retreat_points:
+                    continue
+
+                closest_enemy = enemy_attackers_very_close.closest_to(ally)
+                retreat_point = max(
+                    retreat_points, key=lambda x: x.distance_to(closest_enemy) - x.distance_to(ally)
+                )
+                await self.do(ally.move(retreat_point))
+                continue
+
+            # Return to close battle
+            if enemy_units_target is not None and enemy_units_target.amount != 0:
+                closest_enemy = enemy_units_target.closest_to(ally)
+                await self.do(ally.move(closest_enemy.position))
+                continue
+
