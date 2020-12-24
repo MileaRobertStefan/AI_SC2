@@ -1,3 +1,5 @@
+from sc2.position import Point3
+
 from all_imports_packages import *
 from Zerg.unit_table import *
 
@@ -165,7 +167,67 @@ class ZergAI(sc2.BotAI):
         await self.micro_in_battle_caster()
         await self.army_cast_skills()
 
+    def draw_vision_blockers(self):
+        for p in self.game_info.vision_blockers:
+            h2 = self.get_terrain_z_height(p)
+            pos = Point3((p.x, p.y, h2))
+            p0 = Point3((pos.x - 0.25, pos.y - 0.25, pos.z + 0.25)) + Point2((0.5, 0.5))
+            p1 = Point3((pos.x + 0.25, pos.y + 0.25, pos.z - 0.25)) + Point2((0.5, 0.5))
+            # print(f"Drawing {p0} to {p1}")
+            color = Point3((255, 0, 0))
+            self._client.debug_box_out(p0, p1, color=color)
+
+    def draw_visibility_pixelmap(self):
+        for (y, x), value in np.ndenumerate(self.state.visibility.data_numpy):
+            p = Point2((x, y))
+            h2 = self.get_terrain_z_height(p)
+            pos = Point3((p.x, p.y, h2))
+            p0 = Point3((pos.x - 0.25, pos.y - 0.25, pos.z + 0.25)) + Point2((0.5, 0.5))
+            p1 = Point3((pos.x + 0.25, pos.y + 0.25, pos.z - 0.25)) + Point2((0.5, 0.5))
+            # Red
+            color = Point3((255, 0, 0))
+            # If value == 2: show green (= we have vision on that point)
+            if value == 2:
+                color = Point3((0, 255, 0))
+            self._client.debug_box_out(p0, p1, color=color)
+
+    def draw_pathing_grid(self):
+        map_area = self._game_info.playable_area
+        for (b, a), value in np.ndenumerate(self._game_info.pathing_grid.data_numpy):
+            if value == 0:
+                continue
+            # Skip values outside of playable map area
+            if not (map_area.x <= a < map_area.x + map_area.width):
+                continue
+            if not (map_area.y <= b < map_area.y + map_area.height):
+                continue
+            p = Point2((a, b))
+            h2 = self.get_terrain_z_height(p)
+            pos = Point3((p.x, p.y, h2))
+            p0 = Point3((pos.x - 0.25, pos.y - 0.25, pos.z + 0.25)) + Point2((0.5, 0.5))
+            p1 = Point3((pos.x + 0.25, pos.y + 0.25, pos.z - 0.25)) + Point2((0.5, 0.5))
+            # print(f"Drawing {p0} to {p1}")
+            color = Point3((0, 255, 0))
+            self._client.debug_box_out(p0, p1, color=color)
+
+    def draw_ramp_points(self):
+        for ramp in self.game_info.map_ramps:
+            for p in ramp.points:
+                h2 = self.get_terrain_z_height(p)
+                pos = Point3((p.x, p.y, h2))
+                color = Point3((255, 0, 0))
+                if p in ramp.upper:
+                    color = Point3((0, 255, 0))
+                if p in ramp.upper2_for_ramp_wall:
+                    color = Point3((0, 255, 255))
+                if p in ramp.lower:
+                    color = Point3((0, 0, 255))
+                self._client.debug_box2_out(pos + Point2((0.5, 0.5)), half_vertex_length=0.25, color=color)
+
     async def update_state(self):
+        self.draw_ramp_points()
+        self.draw_vision_blockers()
+
         if self.time < 4 * 60:
             self.era = EARLY_GAME
         elif self.time < 9 * 60:
@@ -642,7 +704,7 @@ class ZergAI(sc2.BotAI):
 
         valid_placements = [p for index, p in enumerate(positions) if valid_placements[index] == ActionResult.Success]
 
-        all_tumors = self.units(CREEPTUMOR) | self.units(CREEPTUMORBURROWED) | self.units(CREEPTUMORQUEEN)
+        all_tumors = self.structures(CREEPTUMOR) | self.structures(CREEPTUMORBURROWED) | self.structures(CREEPTUMORQUEEN)
         unused_tumors = all_tumors.filter(lambda x: x.tag not in self.used_creep_tumors)
         if casting_unit in all_tumors:
             unused_tumors = unused_tumors.filter(lambda x: x.tag != casting_unit.tag)
@@ -758,14 +820,14 @@ class ZergAI(sc2.BotAI):
 
         for ally in ally_units_controllable:
             enemy_attackers_close = enemy_attackers.filter(
-                lambda unit: unit.distance_to(ally) < 15
+                lambda unit: unit.distance_to(ally) < 20
             )
 
             if enemy_attackers_close.amount == 0:
                 continue
 
             ally_army_close = ally_units.filter(
-                lambda unit: unit.distance_to(ally) < 15
+                lambda unit: unit.distance_to(ally) < 20
             )
 
             # Retreat
@@ -858,14 +920,14 @@ class ZergAI(sc2.BotAI):
 
         for ally in ally_units_controllable:
             enemy_attackers_close = enemy_attackers.filter(
-                lambda unit: unit.distance_to(ally) < 15
+                lambda unit: unit.distance_to(ally) < 20
             )
 
             if enemy_attackers_close.amount == 0:
                 continue
 
             ally_army_close = ally_units.filter(
-                lambda unit: unit.distance_to(ally) < 15
+                lambda unit: unit.distance_to(ally) < 20
             )
 
             # Retreat
