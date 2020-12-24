@@ -45,28 +45,38 @@ def neighbors_8(position, distance=1):
 
 class ZergAI(sc2.BotAI):
     def __init__(self):
-        self.MAX_WORKERS = 60
+        self.MAX_WORKERS = 75
         self.era = EARLY_GAME
         self.own_bases = []
         self.nr_bases = 0
+
         self.first_expansion_done = False
         self.save_for_first_expansion = False
         self.save_for_spawning_pool = False
-        self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA]
-        self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
+
+        self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA, LARVA]
+        self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR]
         self.ARMY_IDS_RANGED = [ROACH, RAVAGER, HYDRALISK]
+        self.ARMY_IDS_COMBAT = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
+        self.ARMY_IDS_CASTER = [INFESTOR]
+
+        self.ARMY_CASTER_MINIMUM_ENERGY = {
+            INFESTOR: 75
+        }
+
+        self.UNTARGETABLE_IDS = {ADEPTPHASESHIFT}
         self.FREQUENCES = {
-            ZERGLING: 0,
+            ZERGLING: 2,
             BANELING: 1,
             ROACH: 20,
-            RAVAGER: 3,
-            HYDRALISK: 10
+            RAVAGER: 4,
+            HYDRALISK: 10,
+            INFESTOR: 4,
         }
-        self.expansion_locations_list = []
+        self.expansion_locations_list_own = []
 
         self.positions_with_creep = []
         self.positions_without_creep = []
-        # self.FREQUENCES = [0, 0, 1, 100, 0]
 
         self.build_priorities = {
             DRONE: 0,
@@ -90,45 +100,60 @@ class ZergAI(sc2.BotAI):
         self.used_creep_tumors = set()
 
         self.unit_table = UnitTable()
+        # self.unit_command_uses_self_do = True
 
     def get_priority(self, unit_id):
         chance = np.random.random_sample()
         required_chance = 2 ** (-self.build_priorities[unit_id])
         return chance < required_chance
 
-    def on_start(self):
-        self.expansion_locations_list = []
-        for el in self.expansion_locations:
-            self.expansion_locations_list.append(el)
+    async def on_start(self):
+        self.expansion_locations_list_own = []
+        for el in self.expansion_locations_list:
+            self.expansion_locations_list_own.append(el)
 
     async def on_step(self, iteration):
         await self.update_state()
-
         await self.first_expand()
         await self.expand()
         if self.nr_bases:
             await self.distribute_workers()
             if not self.save_for_first_expansion and not self.save_for_spawning_pool:
-                await self.build_overlords()
                 await self.build_drones()
+                await self.build_overlords()
             await self.build_buildings()
             await self.build_queens()
             await self.build_units_probabilistic()
             await self.handle_micro()
 
     async def build_buildings(self):
+        # Essentials
         await self.build_extractors()
         await self.build_building(SPAWNINGPOOL, self.own_bases[0])
-        if self.FREQUENCES[ZERGLING] != 0 and self.FREQUENCES[BANELING] != 0:
+
+        # Early Game
+        if self.FREQUENCES[ZERGLING] and self.FREQUENCES[BANELING]:
             await self.build_building(BANELINGNEST, self.own_bases[0], start_time=int(4.5 * 60))
-        await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(1.5 * 60))
+
+        if self.FREQUENCES[ROACH]:
+            await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(1.5 * 60))
+            await self.all_upgrades(ROACHWARREN)
+
         await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=int(4.5 * 60),
                                   required_amount=self.era)
-        await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
         await self.all_upgrades(EVOLUTIONCHAMBER, exception_id_list=[RESEARCH_ZERGMELEEWEAPONSLEVEL1])
-        await self.all_upgrades(ROACHWARREN)
+
+        await self.upgrade(self.own_bases[0], RESEARCH_BURROW, time=4 * 60)
+
+        # Mid Game
         await self.build_building(LAIR, self.own_bases[0], start_time=5 * 60)
-        await self.upgrade(self.own_bases[0], RESEARCH_BURROW)
+
+        if self.FREQUENCES[HYDRALISK]:
+            await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
+            await self.all_upgrades(HYDRALISKDEN)
+
+        if self.FREQUENCES[INFESTOR]:
+            await self.build_building(INFESTATIONPIT, self.own_bases[0], start_time=6 * 60)
 
     async def handle_micro(self):
         await self.queens_inject()
@@ -136,7 +161,8 @@ class ZergAI(sc2.BotAI):
         await self.building_cancel_micro()
         await self.expand_creep_by_queen()
         await self.expand_creep_by_tumor()
-        await self.micro_in_battle()
+        await self.micro_in_battle_combat()
+        await self.micro_in_battle_caster()
         await self.army_cast_skills()
 
     async def update_state(self):
@@ -148,18 +174,12 @@ class ZergAI(sc2.BotAI):
             self.era = LATE_GAME
 
         self.own_bases = []
-        for base in self.units(HATCHERY).ready:
-            self.own_bases.append(base)
-
-        for base in self.units(LAIR):
-            self.own_bases.append(base)
-
-        for base in self.units(HIVE):
+        for base in self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE):
             self.own_bases.append(base)
 
         self.nr_bases = len(self.own_bases)
 
-        if self.nr_bases == 1 and self.already_pending(HATCHERY) == 1 and not self.first_expansion_done:
+        if self.nr_bases >= 1 and self.already_pending(HATCHERY) >= 1 and not self.first_expansion_done:
             self.first_expansion_done = True
             self.save_for_first_expansion = False
             self.save_for_spawning_pool = True
@@ -180,6 +200,7 @@ class ZergAI(sc2.BotAI):
                 EVOLUTIONCHAMBER: 3,
                 LAIR: 5,
                 HYDRALISKDEN: 9,
+                INFESTATIONPIT: 9,
                 "UPGRADES": 4,
             }
         elif self.era == MID_GAME:
@@ -195,11 +216,12 @@ class ZergAI(sc2.BotAI):
                 EVOLUTIONCHAMBER: 1,
                 LAIR: 0,
                 HYDRALISKDEN: 0,
+                INFESTATIONPIT: 1,
                 "UPGRADES": 0,
             }
         else:
             self.build_priorities = {
-                DRONE: 2,
+                DRONE: 1,
                 "ARMY": 0,
                 SPAWNINGPOOL: 0,
                 ROACHWARREN: 0,
@@ -210,14 +232,13 @@ class ZergAI(sc2.BotAI):
                 EVOLUTIONCHAMBER: 0,
                 LAIR: 0,
                 HYDRALISKDEN: 0,
+                INFESTATIONPIT: 0,
                 "UPGRADES": 0,
             }
 
         if self.units(DRONE).amount < 50 and self.era >= MID_GAME:
             self.build_priorities[DRONE] = 0
             self.build_priorities["ARMY"] = 2
-
-        # await self.chat_send(str(self.save_for_first_expansion) + " | " + str(self.save_for_spawning_pool))
 
     async def build_drones(self):
         if not self.get_priority(DRONE):
@@ -226,14 +247,15 @@ class ZergAI(sc2.BotAI):
         nr_drones = len(self.units(DRONE))
 
         nr_ideal_workers = 0
-        for base in self.units(HATCHERY).ready | self.units(LAIR) | self.units(HIVE):
+        for base in self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE):
             nr_ideal_workers += base.ideal_harvesters
 
-        if nr_drones + self.already_pending(DRONE) < nr_ideal_workers and nr_drones < self.MAX_WORKERS:
-            larvae = self.units(LARVA).ready
+        if nr_drones + self.already_pending(DRONE) < nr_ideal_workers and nr_drones + self.already_pending(
+                DRONE) < self.MAX_WORKERS:
+            larvae = self.units(LARVA)
 
             if self.can_afford(DRONE) and larvae.exists:
-                await self.do(larvae.random.train(DRONE))
+                larvae.random.train(DRONE)
 
     async def build_overlords(self):
         if not self.get_priority(OVERLORD):
@@ -248,7 +270,7 @@ class ZergAI(sc2.BotAI):
         if self.supply_left < supply_gap[self.era]:
             larvae = self.units(LARVA).ready
             if larvae.exists and self.already_pending(OVERLORD) < pending_ideal[self.era] and self.can_afford(OVERLORD):
-                await self.do(larvae.random.train(OVERLORD))
+                larvae.random.train(OVERLORD)
 
     async def build_building(self, building_id, chosen_base, required_amount=1, start_time=0):
         if not self.get_priority(building_id):
@@ -260,17 +282,17 @@ class ZergAI(sc2.BotAI):
         if self.time < start_time:
             return
 
-        if building_id == ROACHWARREN and self.units(SPAWNINGPOOL).ready.amount < 1:
+        if building_id == ROACHWARREN and self.structures(SPAWNINGPOOL).ready.amount < 1:
             return
 
-        if building_id == BANELINGNEST and self.units(SPAWNINGPOOL).ready.amount < 1:
+        if building_id == BANELINGNEST and self.structures(SPAWNINGPOOL).ready.amount < 1:
             return
 
-        if building_id == HYDRALISKDEN and self.units(LAIR).ready.amount < 1:
+        if building_id == HYDRALISKDEN and self.structures(LAIR).ready.amount < 1:
             return
 
         if self.can_afford(building_id) and self.already_pending(building_id) \
-                + self.units(building_id).filter(
+                + self.structures(building_id).filter(
             lambda structure: structure.type_id == building_id and structure.is_ready
         ).amount < required_amount:
             map_center = self.game_info.map_center
@@ -282,7 +304,7 @@ class ZergAI(sc2.BotAI):
                 await self.build(building_id, near=position_towards_map_center, placement_step=1)
 
     async def build_extractors(self):
-        if len(self.units(SPAWNINGPOOL)) == 0:
+        if len(self.structures(SPAWNINGPOOL)) == 0:
             return
 
         for hatchery in self.own_bases:
@@ -293,26 +315,26 @@ class ZergAI(sc2.BotAI):
             if self.units(DRONE).closer_than(7, hatchery).amount < 8:
                 continue
 
-            vespenes = self.state.vespene_geyser.closer_than(10.0, hatchery)
+            vespenes = self.vespene_geyser.closer_than(10.0, hatchery)
 
             for vespene in vespenes:
                 if not self.can_afford(EXTRACTOR):
                     break
 
-                if self.units(EXTRACTOR).closer_than(1.0, vespene).exists:
+                if self.structures(EXTRACTOR).closer_than(1.0, vespene).exists:
                     break
 
                 worker = self.select_build_worker(vespene.position)
                 if worker is None:
                     break
 
-                await self.do(worker.build(EXTRACTOR, vespene))
+                worker.build_gas(vespene)
 
     async def build_queens(self):
         if not self.get_priority(QUEEN):
             return
 
-        if len(self.units(SPAWNINGPOOL).ready) == 0:
+        if len(self.structures(SPAWNINGPOOL).ready) == 0:
             return
 
         nr_demanded_queens = [self.nr_bases + 1, self.nr_bases * 1 + 2, self.nr_bases * 1 + 2]
@@ -320,7 +342,7 @@ class ZergAI(sc2.BotAI):
 
         for base in self.own_bases:
             if self.can_afford(QUEEN) and nr_queens < nr_demanded_queens[self.era] and base.is_idle:
-                await self.do(base.train(QUEEN))
+                base.train(QUEEN)
 
     async def queens_inject(self):
         for base in self.own_bases:
@@ -332,7 +354,7 @@ class ZergAI(sc2.BotAI):
 
             abilities = await self.get_available_abilities(queen)
             if EFFECT_INJECTLARVA in abilities:
-                await self.do(queen(EFFECT_INJECTLARVA, base))
+                queen(EFFECT_INJECTLARVA, base)
 
     async def first_expand(self):
         if self.first_expansion_done:
@@ -349,24 +371,31 @@ class ZergAI(sc2.BotAI):
             if drone is None:
                 return
 
-            await self.do(drone.move(position))
+            drone.move(position)
             self.save_for_first_expansion = True
 
             if self.can_afford(HATCHERY):
                 await self.expand_now(max_distance=0)
 
     async def expand(self):
+        # TO DO: REDUCE NR EXPANSIONS
         if not self.get_priority("EXPAND"):
+            return
+
+        if self.already_pending(HATCHERY):
             return
 
         nr_drones = len(self.units(DRONE))
 
         nr_ideal_workers = 0
-        for base in self.units(HATCHERY).ready | self.units(LAIR) | self.units(HIVE):
+        for base in self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE):
             nr_ideal_workers += base.ideal_harvesters
+            if self.units(DRONE).closer_than(10, base).amount < 5:
+                return
+
         nr_desired_drones = nr_ideal_workers * 0.7
 
-        nr_bases = (self.units(HATCHERY) | self.units(LAIR) | self.units(HIVE)).amount
+        nr_bases = (self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE)).amount
 
         if nr_bases > NR_EARLY_OPTIMAL_BASES and nr_drones < nr_desired_drones:
             return
@@ -381,46 +410,47 @@ class ZergAI(sc2.BotAI):
         if self.nr_bases < 2:
             return False
 
-        to_evolve_units = self.units(from_id)
+        # TO DO, SEPARATE CASES FOR BUILDINGS AND UNITS
+        to_evolve_units = self.units(from_id) | self.structures(from_id)
         if to_evolve_units.amount == 0:
             return False
 
         if self.can_afford(morph_id) and to_evolve_units.exists:
-            await self.do(to_evolve_units.random.train(morph_id))
+            to_evolve_units.random.train(morph_id)
             return True
 
     async def attack_enemy(self):
         army_units = self.units.of_type(self.ARMY_IDS)
 
-        if self.supply_army - self.units(QUEEN).amount * 2 < 1:
-            target = self.known_enemy_units
+        if self.supply_army - self.units(QUEEN).amount * 2 < 70:
+            target = self.enemy_units
             if len(target):
                 target = target.random.position
 
-                bases = self.units(HATCHERY).ready | self.units(LAIR) | self.units(HIVE)
+                bases = self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE)
 
                 for base in bases:
                     if base.distance_to(target) <= 20:
                         for creature in army_units.idle:
-                            await self.do(creature.attack(target))
+                            creature.attack(target)
                 #
                 # if self.start_location.distance2_to(target) <= \
                 #   self.start_location.distance2_to(self.game_info.map_center):
                 #     for creature in army_units.idle:
-                #         await self.do(creature.attack(target))
+                #         creature.attack(target)
 
             else:
                 # If there are no threats
                 target = self.game_info.map_center
                 for creature in army_units.idle.further_than(10, self.game_info.map_center):
-                    await self.do(creature.attack(target))
+                    creature.attack(target)
 
             return
 
-        target = self.known_enemy_structures.random_or(self.enemy_start_locations[0]).position
+        target = self.enemy_structures.random_or(self.enemy_start_locations[0]).position
 
         for creature in army_units.idle:
-            await self.do(creature.attack(target))
+            creature.attack(target)
 
     async def build_units_probabilistic(self):
         if not self.get_priority("ARMY"):
@@ -435,22 +465,25 @@ class ZergAI(sc2.BotAI):
                 self.selected_unit_index_in_queue = None
 
         else:
-            # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
+            # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR]
 
             can_make = dict()
-            if self.units(SPAWNINGPOOL).ready.amount > 0:
+            if self.structures(SPAWNINGPOOL).ready.amount > 0:
                 can_make[ZERGLING] = True
 
-            if self.units(BANELINGNEST).ready.amount > 0 and self.units(ZERGLING).amount > 0:
+            if self.structures(BANELINGNEST).ready.amount > 0 and self.units(ZERGLING).amount > 0:
                 can_make[BANELING] = True
 
-            if self.units(ROACHWARREN).ready.amount > 0:
+            if self.structures(ROACHWARREN).ready.amount > 0:
                 can_make[ROACH] = True
                 if self.units(ROACH).amount > 0:
                     can_make[RAVAGER] = True
 
-            if self.units(HYDRALISKDEN).ready.amount > 0:
+            if self.structures(HYDRALISKDEN).ready.amount > 0:
                 can_make[HYDRALISK] = True
+
+            if self.structures(INFESTATIONPIT).ready.amount > 0:
+                can_make[INFESTOR] = True
 
             freq_sum = 0
             for unit in self.FREQUENCES:
@@ -476,6 +509,7 @@ class ZergAI(sc2.BotAI):
     async def army_cast_skills(self):
         await self.ravager_corrosive_bile()
         await self.roach_burrow()
+        await self.infestor_fungal_growth()
 
     async def ravager_corrosive_bile(self):
         for ravager in self.units(RAVAGER):
@@ -483,15 +517,15 @@ class ZergAI(sc2.BotAI):
             if EFFECT_CORROSIVEBILE not in abilities:
                 continue
 
-            possible_targets = self.known_enemy_units.closer_than(9, ravager)
+            possible_targets = self.enemy_units.closer_than(9, ravager)
             if possible_targets.amount == 0:
                 continue
 
-            target = possible_targets.closest_to(ravager)
+            target = possible_targets.random
             if target is None:
                 continue
 
-            await self.do(ravager(EFFECT_CORROSIVEBILE, target.position))
+            ravager(EFFECT_CORROSIVEBILE, target.position)
 
     async def roach_burrow(self):
         for roach in self.units(ROACH):
@@ -502,15 +536,33 @@ class ZergAI(sc2.BotAI):
             if BURROWDOWN_ROACH not in abilities:
                 continue
 
-            await self.do(roach(BURROWDOWN_ROACH))
+            roach(BURROWDOWN_ROACH)
 
         for roach in self.units(ROACHBURROWED):
+            if roach.health_percentage < 4 / 5:
+                continue
+
             abilities = await self.get_available_abilities(roach)
             if BURROWUP_ROACH not in abilities:
                 continue
 
-            if roach.health_percentage > 4 / 5:
-                await self.do(roach(BURROWUP_ROACH))
+            roach(BURROWUP_ROACH)
+
+    async def infestor_fungal_growth(self):
+        for infestor in self.units(INFESTOR):
+            abilities = await self.get_available_abilities(infestor)
+            if FUNGALGROWTH_FUNGALGROWTH not in abilities:
+                continue
+
+            possible_targets = self.enemy_units.closer_than(10, infestor)
+            if possible_targets.amount == 0:
+                continue
+
+            target = possible_targets.random
+            if target is None:
+                continue
+
+            infestor(FUNGALGROWTH_FUNGALGROWTH, target.position)
 
     async def all_upgrades(self, building_id, time=0, exception_id_list=None):
         # useless_abilities = {CANCEL_BUILDINPROGRESS, CANCEL_QUEUE5, RALLY_HATCHERY_UNITS,
@@ -519,7 +571,7 @@ class ZergAI(sc2.BotAI):
         if exception_id_list is None:
             exception_id_list = []
 
-        buildings = self.units(building_id).ready
+        buildings = self.structures(building_id).ready
         for building in buildings:
             abilities = await self.get_available_abilities(building)
 
@@ -535,27 +587,29 @@ class ZergAI(sc2.BotAI):
         abilities = await self.get_available_abilities(building)
         if research_id in abilities:
             if self.can_afford(research_id) and building.is_idle:
-                await self.do(building(research_id))
+                building(research_id)
                 await self.chat_send(f"Researching: {str(research_id)}")
 
     async def building_cancel_micro(self):
-        for building in self.units.structure.not_ready.filter(
+        for building in self.structures.not_ready.filter(
                 lambda x: x.health_percentage + 0.05 < x.build_progress and x.health_percentage < 0.1
         ):
-            await self.do(building(CANCEL))
+            building(CANCEL)
 
     async def update_creep_overage(self, step_size=None):
         if step_size is None:
             step_size = self.creep_target_distance
         ability = self._game_data.abilities[ZERGBUILD_CREEPTUMOR.value]
 
-        positions = [Point2((x, y)) \
-                     for x in range(self._game_info.playable_area[0] + step_size,
-                                    self._game_info.playable_area[0] + self._game_info.playable_area[2] - step_size,
-                                    step_size) \
-                     for y in range(self._game_info.playable_area[1] + step_size,
-                                    self._game_info.playable_area[1] + self._game_info.playable_area[3] - step_size,
-                                    step_size)]
+        positions = [
+            Point2((x, y))
+            for x in range(self._game_info.playable_area[0] + step_size,
+                           self._game_info.playable_area[0] + self._game_info.playable_area[2] - step_size,
+                           step_size)
+            for y in range(self._game_info.playable_area[1] + step_size,
+                           self._game_info.playable_area[1] + self._game_info.playable_area[3] - step_size,
+                           step_size)
+        ]
 
         valid_placements = await self._client.query_building_placement(ability, positions)
         success_results = [
@@ -582,7 +636,7 @@ class ZergAI(sc2.BotAI):
         positions = get_positions_around_unit(casting_unit, min_range, max_range,
                                               step_size, location_amount)
 
-        positions = [pos for pos in positions if get_closest_distance(self.expansion_locations_list, pos) > 4]
+        positions = [pos for pos in positions if get_closest_distance(self.expansion_locations_list_own, pos) > 4]
 
         valid_placements = await self._client.query_building_placement(ability, positions)
 
@@ -627,11 +681,12 @@ class ZergAI(sc2.BotAI):
                 if valid_placements[0] != ActionResult.Success:
                     continue
 
-                await self.do(queen(BUILD_CREEPTUMOR_QUEEN, loc))
+                queen(BUILD_CREEPTUMOR_QUEEN, loc)
                 break
 
     async def expand_creep_by_tumor(self):
-        all_tumors = self.units(CREEPTUMOR) | self.units(CREEPTUMORBURROWED) | self.units(CREEPTUMORQUEEN)
+        all_tumors = self.structures(CREEPTUMOR) | self.structures(CREEPTUMORBURROWED) | self.structures(
+            CREEPTUMORQUEEN)
 
         if all_tumors.amount == 0:
             return
@@ -662,13 +717,12 @@ class ZergAI(sc2.BotAI):
                 continue
 
             for loc in locations:
-
                 ability = self._game_data.abilities[ZERGBUILD_CREEPTUMOR.value]
                 valid_placements = await self._client.query_building_placement(ability, [loc])
                 if valid_placements[0] != ActionResult.Success:
                     continue
 
-                await self.do(tumor(BUILD_CREEPTUMOR_TUMOR, loc))
+                tumor(BUILD_CREEPTUMOR_TUMOR, loc)
                 new_tumors_positions.add((tumor.position.x, tumor.position.y))
                 self.used_creep_tumors.add(tumor.tag)
                 break
@@ -676,6 +730,9 @@ class ZergAI(sc2.BotAI):
     def better_army(self, ally_army, enemy_army):
         score_ally = 0
         for ally in ally_army:
+            if ally.type_id in self.ARMY_IDS_CASTER and ally.energy < self.ARMY_CASTER_MINIMUM_ENERGY[ally.type_id]:
+                continue
+
             if ally.type_id in self.unit_table.unit_power:
                 score_ally += self.unit_table.unit_power[ally.type_id]
 
@@ -686,19 +743,20 @@ class ZergAI(sc2.BotAI):
 
         return score_ally > score_enemy
 
-    async def micro_in_battle(self):
+    async def micro_in_battle_combat(self):
         ally_units = self.units.of_type(self.ARMY_IDS)
+        ally_units_controllable = self.units.of_type(self.ARMY_IDS_COMBAT)
 
-        if ally_units.amount == 0:
+        if ally_units_controllable.amount == 0:
             return
 
-        enemies = self.known_enemy_units
+        enemies = self.enemy_units | self.enemy_structures
         enemy_attackers = enemies.filter(lambda unit: unit.can_attack)
 
         if enemy_attackers.amount == 0:
             return
 
-        for ally in ally_units:
+        for ally in ally_units_controllable:
             enemy_attackers_close = enemy_attackers.filter(
                 lambda unit: unit.distance_to(ally) < 15
             )
@@ -711,9 +769,7 @@ class ZergAI(sc2.BotAI):
             )
 
             # Retreat
-            if not self.better_army(ally_army_close, enemy_attackers_close) and \
-                    self.supply_army < 100 and self.minerals < 1000:
-
+            if not self.better_army(ally_army_close, enemy_attackers_close):
                 retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
 
                 # Filter points that are pathable
@@ -724,7 +780,7 @@ class ZergAI(sc2.BotAI):
 
                 closest_enemy = enemy_attackers_close.closest_to(ally)
                 retreat_point = closest_enemy.position.furthest(retreat_points)
-                await self.do(ally.move(retreat_point))
+                ally.move(retreat_point)
                 continue
 
             # Attack
@@ -747,12 +803,14 @@ class ZergAI(sc2.BotAI):
 
             # Can attack
             if ally.weapon_cooldown == 0 and enemy_units_target is not None and enemy_units_target.amount != 0:
-                attackable_unit_targets = enemy_units_target.filter(lambda unit: unit.can_be_attacked)
+                attackable_unit_targets = enemy_units_target.filter(
+                    lambda unit: unit.can_be_attacked and unit.type_id not in self.UNTARGETABLE_IDS
+                )
                 if attackable_unit_targets.amount != 0:
                     lowest_unit_target = attackable_unit_targets.sorted(
                         lambda unit: unit.health_percentage and unit.is_structure
                     )[0]
-                    await self.do(ally.attack(lowest_unit_target))
+                    ally.attack(lowest_unit_target)
                     continue
 
             # Kite Back
@@ -776,11 +834,84 @@ class ZergAI(sc2.BotAI):
                 retreat_point = max(
                     retreat_points, key=lambda x: x.distance_to(closest_enemy) - x.distance_to(ally)
                 )
-                await self.do(ally.move(retreat_point))
+                ally.move(retreat_point)
                 continue
 
             # Return to close battle
             if enemy_units_target is not None and enemy_units_target.amount != 0:
                 closest_enemy = enemy_units_target.closest_to(ally)
-                await self.do(ally.move(closest_enemy.position))
+                ally.move(closest_enemy.position)
+                continue
+
+    async def micro_in_battle_caster(self):
+        ally_units = self.units.of_type(self.ARMY_IDS)
+        ally_units_controllable = self.units.of_type(self.ARMY_IDS_CASTER)
+
+        if ally_units_controllable.amount == 0:
+            return
+
+        enemies = self.enemy_units
+        enemy_attackers = enemies.filter(lambda unit: unit.can_attack)
+
+        if enemy_attackers.amount == 0:
+            return
+
+        for ally in ally_units_controllable:
+            enemy_attackers_close = enemy_attackers.filter(
+                lambda unit: unit.distance_to(ally) < 15
+            )
+
+            if enemy_attackers_close.amount == 0:
+                continue
+
+            ally_army_close = ally_units.filter(
+                lambda unit: unit.distance_to(ally) < 15
+            )
+
+            # Retreat
+            if not self.better_army(ally_army_close, enemy_attackers_close):
+                print("INFESTOR RETREATING")
+
+                retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
+
+                # Filter points that are pathable
+                retreat_points = {x for x in retreat_points if self.in_pathing_grid(x)}
+
+                if not retreat_points:
+                    continue
+
+                closest_enemy = enemy_attackers_close.closest_to(ally)
+                retreat_point = closest_enemy.position.furthest(retreat_points)
+                ally.move(retreat_point)
+                continue
+
+            # Kite Back
+            kite_distance = 9
+            if ally.is_flying:
+                enemy_attackers_very_close = enemies.filter(
+                    lambda unit: unit.can_attack_air and unit.distance_to(ally) < kite_distance
+                )
+            else:
+                enemy_attackers_very_close = enemies.filter(
+                    lambda unit: unit.can_attack_ground and unit.distance_to(ally) < kite_distance
+                )
+
+            if enemy_attackers_very_close.amount != 0:
+                retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
+                retreat_points = {x for x in retreat_points if self.in_pathing_grid(x)}
+
+                if not retreat_points:
+                    continue
+
+                closest_enemy = enemy_attackers_very_close.closest_to(ally)
+                retreat_point = max(
+                    retreat_points, key=lambda x: x.distance_to(closest_enemy) - x.distance_to(ally)
+                )
+                ally.move(retreat_point)
+                continue
+
+            # Return to close battle
+            if enemy_attackers_close.amount != 0:
+                closest_enemy = enemy_attackers_close.closest_to(ally)
+                ally.move(closest_enemy.position)
                 continue

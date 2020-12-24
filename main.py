@@ -9,9 +9,9 @@ class Humanoid(sc2.BotAI):
 
 def test_game(AI, race, map, realtime=False):
     run_game(maps.get(map), [
-        # Bot(Race.Terran, Mihui()),
+        # Bot(Race.Terran, Humanoid()),
         Bot(race, AI),
-        Computer(Race.Protoss, Difficulty.VeryHard)
+        Computer(Race.Terran, Difficulty.VeryHard)
     ], realtime=realtime)
 
 
