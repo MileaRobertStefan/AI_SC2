@@ -55,7 +55,13 @@ class ZergAI(sc2.BotAI):
         self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA]
         self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
         self.ARMY_IDS_RANGED = [ROACH, RAVAGER, HYDRALISK]
-        self.FREQUENCES = [1, 1, 20, 3, 10]
+        self.FREQUENCES = {
+            ZERGLING: 0,
+            BANELING: 1,
+            ROACH: 20,
+            RAVAGER: 3,
+            HYDRALISK: 10
+        }
         self.expansion_locations_list = []
 
         self.positions_with_creep = []
@@ -113,12 +119,16 @@ class ZergAI(sc2.BotAI):
     async def build_buildings(self):
         await self.build_extractors()
         await self.build_building(SPAWNINGPOOL, self.own_bases[0])
-        await self.build_building(BANELINGNEST, self.own_bases[0], start_time=int(4.5 * 60))
-        await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(3.5 * 60))
-        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=int(4.5 * 60), required_amount=self.era)
+        if self.FREQUENCES[ZERGLING] != 0 and self.FREQUENCES[BANELING] != 0:
+            await self.build_building(BANELINGNEST, self.own_bases[0], start_time=int(4.5 * 60))
+        await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(1.5 * 60))
+        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=int(4.5 * 60),
+                                  required_amount=self.era)
         await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
-        await self.all_upgrades(EVOLUTIONCHAMBER)
+        await self.all_upgrades(EVOLUTIONCHAMBER, exception_id_list=[RESEARCH_ZERGMELEEWEAPONSLEVEL1])
+        await self.all_upgrades(ROACHWARREN)
         await self.build_building(LAIR, self.own_bases[0], start_time=5 * 60)
+        await self.upgrade(self.own_bases[0], RESEARCH_BURROW)
 
     async def handle_micro(self):
         await self.queens_inject()
@@ -427,33 +437,33 @@ class ZergAI(sc2.BotAI):
         else:
             # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
 
-            can_make = [False for x in self.FREQUENCES]
+            can_make = dict()
             if self.units(SPAWNINGPOOL).ready.amount > 0:
-                can_make[0] = True
+                can_make[ZERGLING] = True
 
             if self.units(BANELINGNEST).ready.amount > 0 and self.units(ZERGLING).amount > 0:
-                can_make[1] = True
+                can_make[BANELING] = True
 
             if self.units(ROACHWARREN).ready.amount > 0:
-                can_make[2] = True
+                can_make[ROACH] = True
                 if self.units(ROACH).amount > 0:
-                    can_make[3] = True
+                    can_make[RAVAGER] = True
 
             if self.units(HYDRALISKDEN).ready.amount > 0:
-                can_make[4] = True
+                can_make[HYDRALISK] = True
 
             freq_sum = 0
-            for i, freq in enumerate(self.FREQUENCES):
-                if can_make[i]:
-                    freq_sum += freq
+            for unit in self.FREQUENCES:
+                if unit in can_make:
+                    freq_sum += self.FREQUENCES[unit]
 
             if freq_sum == 0:
                 return
 
-            probabilities = [0.0 for x in self.FREQUENCES]
-            for i, freq in enumerate(self.FREQUENCES):
-                if can_make[i]:
-                    probabilities[i] = freq / freq_sum
+            probabilities = [0 for x in self.FREQUENCES]
+            for i, unit in enumerate(self.FREQUENCES):
+                if unit in can_make:
+                    probabilities[i] = self.FREQUENCES[unit] / freq_sum
 
             if np.sum(probabilities) == 0:
                 return
@@ -464,35 +474,57 @@ class ZergAI(sc2.BotAI):
             self.selected_unit_index_in_queue = index
 
     async def army_cast_skills(self):
-        if self.units(RAVAGER).amount:
-            await self.ravager_corrosive_bile()
+        await self.ravager_corrosive_bile()
+        await self.roach_burrow()
 
     async def ravager_corrosive_bile(self):
         for ravager in self.units(RAVAGER):
             abilities = await self.get_available_abilities(ravager)
             if EFFECT_CORROSIVEBILE not in abilities:
-                return
+                continue
 
             possible_targets = self.known_enemy_units.closer_than(9, ravager)
             if possible_targets.amount == 0:
-                return
+                continue
 
             target = possible_targets.closest_to(ravager)
             if target is None:
-                return
+                continue
 
             await self.do(ravager(EFFECT_CORROSIVEBILE, target.position))
 
-    async def all_upgrades(self, building_id, time=0):
+    async def roach_burrow(self):
+        for roach in self.units(ROACH):
+            if roach.health_percentage > 2 / 5:
+                continue
+
+            abilities = await self.get_available_abilities(roach)
+            if BURROWDOWN_ROACH not in abilities:
+                continue
+
+            await self.do(roach(BURROWDOWN_ROACH))
+
+        for roach in self.units(ROACHBURROWED):
+            abilities = await self.get_available_abilities(roach)
+            if BURROWUP_ROACH not in abilities:
+                continue
+
+            if roach.health_percentage > 4 / 5:
+                await self.do(roach(BURROWUP_ROACH))
+
+    async def all_upgrades(self, building_id, time=0, exception_id_list=None):
         # useless_abilities = {CANCEL_BUILDINPROGRESS, CANCEL_QUEUE5, RALLY_HATCHERY_UNITS,
         #                      RALLY_HATCHERY_WORKERS, SMART, TRAINQUEEN_QUEEN}
+
+        if exception_id_list is None:
+            exception_id_list = []
 
         buildings = self.units(building_id).ready
         for building in buildings:
             abilities = await self.get_available_abilities(building)
 
             for ability in abilities:
-                if "RESEARCH" in str(ability):
+                if "RESEARCH" in str(ability) and ability not in exception_id_list:
                     # print(ability)
                     await self.upgrade(building, ability, time)
 
@@ -504,6 +536,7 @@ class ZergAI(sc2.BotAI):
         if research_id in abilities:
             if self.can_afford(research_id) and building.is_idle:
                 await self.do(building(research_id))
+                await self.chat_send(f"Researching: {str(research_id)}")
 
     async def building_cancel_micro(self):
         for building in self.units.structure.not_ready.filter(
@@ -678,9 +711,9 @@ class ZergAI(sc2.BotAI):
             )
 
             # Retreat
-            # if ally.health_percentage < 2/5 and ally.type_id in self.ARMY_IDS_RANGED:
             if not self.better_army(ally_army_close, enemy_attackers_close) and \
                     self.supply_army < 100 and self.minerals < 1000:
+
                 retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
 
                 # Filter points that are pathable
@@ -751,4 +784,3 @@ class ZergAI(sc2.BotAI):
                 closest_enemy = enemy_units_target.closest_to(ally)
                 await self.do(ally.move(closest_enemy.position))
                 continue
-

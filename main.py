@@ -2,7 +2,7 @@ from all_imports_packages import *
 from all_imports_ai import *
 
 
-class Mihui(sc2.BotAI):
+class Humanoid(sc2.BotAI):
     async def on_step(self, iteration: int):
         pass
 
@@ -16,6 +16,6 @@ def test_game(AI, race, map, realtime=False):
 
 
 if __name__ == "__main__":
-    test_game(ZergAI(), Race.Zerg, MAP_NAME)
+    test_game(ZergAI(), Race.Zerg, "TritonLE")
     # test_game(SentdeBot(), Race.Protoss, MAP_NAME, realtime=False)
 
