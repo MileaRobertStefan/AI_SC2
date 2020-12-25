@@ -39,6 +39,9 @@ class UnitTable:
             LARVA: 0.001,
             CREEPTUMOR: 0.001,
             CREEPTUMORBURROWED: 0.001,
+            LOCUSTMP: 75,
+            SWARMHOSTMP: 300,
+            SWARMHOSTBURROWEDMP: 300,
 
             # Protoss
             ZEALOT: 100,

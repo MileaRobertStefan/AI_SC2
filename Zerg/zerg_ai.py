@@ -56,14 +56,16 @@ class ZergAI(sc2.BotAI):
         self.save_for_first_expansion = False
         self.save_for_spawning_pool = False
 
-        self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA, LARVA]
-        self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR]
+        self.MORPH_FROM_IDS = [LARVA, ZERGLING, LARVA, ROACH, LARVA, LARVA, LARVA]
+        self.ARMY_IDS = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR, SWARMHOSTMP]
         self.ARMY_IDS_RANGED = [ROACH, RAVAGER, HYDRALISK]
         self.ARMY_IDS_COMBAT = [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK]
-        self.ARMY_IDS_CASTER = [INFESTOR]
+        self.ARMY_IDS_CASTER = [INFESTOR, SWARMHOSTMP]
+        self.ARMY_IDS_SPAWNS = [BROODLING, LOCUSTMP, LOCUSTMPFLYING]
 
         self.ARMY_CASTER_MINIMUM_ENERGY = {
-            INFESTOR: 75
+            INFESTOR: 75,
+            SWARMHOSTMP: 0,
         }
 
         self.UNTARGETABLE_IDS = {ADEPTPHASESHIFT}
@@ -74,6 +76,16 @@ class ZergAI(sc2.BotAI):
             RAVAGER: 4,
             HYDRALISK: 10,
             INFESTOR: 4,
+            SWARMHOSTMP: 3,
+        }
+        self.FREQUENCES = {
+            ZERGLING: 0,
+            BANELING: 0,
+            ROACH: 0,
+            RAVAGER: 0,
+            HYDRALISK: 0,
+            INFESTOR: 0,
+            SWARMHOSTMP: 3,
         }
         self.expansion_locations_list_own = []
 
@@ -154,7 +166,7 @@ class ZergAI(sc2.BotAI):
             await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
             await self.all_upgrades(HYDRALISKDEN)
 
-        if self.FREQUENCES[INFESTOR]:
+        if self.FREQUENCES[INFESTOR] or self.FREQUENCES[SWARMHOSTMP]:
             await self.build_building(INFESTATIONPIT, self.own_bases[0], start_time=6 * 60)
 
     async def handle_micro(self):
@@ -165,69 +177,10 @@ class ZergAI(sc2.BotAI):
         await self.expand_creep_by_tumor()
         await self.micro_in_battle_combat()
         await self.micro_in_battle_caster()
+        await self.micro_in_battle_spawns()
         await self.army_cast_skills()
 
-    def draw_vision_blockers(self):
-        for p in self.game_info.vision_blockers:
-            h2 = self.get_terrain_z_height(p)
-            pos = Point3((p.x, p.y, h2))
-            p0 = Point3((pos.x - 0.25, pos.y - 0.25, pos.z + 0.25)) + Point2((0.5, 0.5))
-            p1 = Point3((pos.x + 0.25, pos.y + 0.25, pos.z - 0.25)) + Point2((0.5, 0.5))
-            # print(f"Drawing {p0} to {p1}")
-            color = Point3((255, 0, 0))
-            self._client.debug_box_out(p0, p1, color=color)
-
-    def draw_visibility_pixelmap(self):
-        for (y, x), value in np.ndenumerate(self.state.visibility.data_numpy):
-            p = Point2((x, y))
-            h2 = self.get_terrain_z_height(p)
-            pos = Point3((p.x, p.y, h2))
-            p0 = Point3((pos.x - 0.25, pos.y - 0.25, pos.z + 0.25)) + Point2((0.5, 0.5))
-            p1 = Point3((pos.x + 0.25, pos.y + 0.25, pos.z - 0.25)) + Point2((0.5, 0.5))
-            # Red
-            color = Point3((255, 0, 0))
-            # If value == 2: show green (= we have vision on that point)
-            if value == 2:
-                color = Point3((0, 255, 0))
-            self._client.debug_box_out(p0, p1, color=color)
-
-    def draw_pathing_grid(self):
-        map_area = self._game_info.playable_area
-        for (b, a), value in np.ndenumerate(self._game_info.pathing_grid.data_numpy):
-            if value == 0:
-                continue
-            # Skip values outside of playable map area
-            if not (map_area.x <= a < map_area.x + map_area.width):
-                continue
-            if not (map_area.y <= b < map_area.y + map_area.height):
-                continue
-            p = Point2((a, b))
-            h2 = self.get_terrain_z_height(p)
-            pos = Point3((p.x, p.y, h2))
-            p0 = Point3((pos.x - 0.25, pos.y - 0.25, pos.z + 0.25)) + Point2((0.5, 0.5))
-            p1 = Point3((pos.x + 0.25, pos.y + 0.25, pos.z - 0.25)) + Point2((0.5, 0.5))
-            # print(f"Drawing {p0} to {p1}")
-            color = Point3((0, 255, 0))
-            self._client.debug_box_out(p0, p1, color=color)
-
-    def draw_ramp_points(self):
-        for ramp in self.game_info.map_ramps:
-            for p in ramp.points:
-                h2 = self.get_terrain_z_height(p)
-                pos = Point3((p.x, p.y, h2))
-                color = Point3((255, 0, 0))
-                if p in ramp.upper:
-                    color = Point3((0, 255, 0))
-                if p in ramp.upper2_for_ramp_wall:
-                    color = Point3((0, 255, 255))
-                if p in ramp.lower:
-                    color = Point3((0, 0, 255))
-                self._client.debug_box2_out(pos + Point2((0.5, 0.5)), half_vertex_length=0.25, color=color)
-
     async def update_state(self):
-        self.draw_ramp_points()
-        self.draw_vision_blockers()
-
         if self.time < 4 * 60:
             self.era = EARLY_GAME
         elif self.time < 9 * 60:
@@ -546,6 +499,7 @@ class ZergAI(sc2.BotAI):
 
             if self.structures(INFESTATIONPIT).ready.amount > 0:
                 can_make[INFESTOR] = True
+                can_make[SWARMHOSTMP] = True
 
             freq_sum = 0
             for unit in self.FREQUENCES:
@@ -572,6 +526,7 @@ class ZergAI(sc2.BotAI):
         await self.ravager_corrosive_bile()
         await self.roach_burrow()
         await self.infestor_fungal_growth()
+        await self.swarmhost_spawn_locusts()
 
     async def ravager_corrosive_bile(self):
         for ravager in self.units(RAVAGER):
@@ -621,10 +576,20 @@ class ZergAI(sc2.BotAI):
                 continue
 
             target = possible_targets.random
-            if target is None:
+            infestor(FUNGALGROWTH_FUNGALGROWTH, target.position)
+
+    async def swarmhost_spawn_locusts(self):
+        for swarmhost in self.units(SWARMHOSTMP):
+            abilities = await self.get_available_abilities(swarmhost)
+            if EFFECT_SPAWNLOCUSTS not in abilities:
                 continue
 
-            infestor(FUNGALGROWTH_FUNGALGROWTH, target.position)
+            possible_targets = self.enemy_units.closer_than(10, swarmhost)
+            if possible_targets.amount == 0:
+                continue
+
+            target = possible_targets.random
+            swarmhost(EFFECT_SPAWNLOCUSTS, target.position)
 
     async def all_upgrades(self, building_id, time=0, exception_id_list=None):
         # useless_abilities = {CANCEL_BUILDINPROGRESS, CANCEL_QUEUE5, RALLY_HATCHERY_UNITS,
@@ -704,7 +669,8 @@ class ZergAI(sc2.BotAI):
 
         valid_placements = [p for index, p in enumerate(positions) if valid_placements[index] == ActionResult.Success]
 
-        all_tumors = self.structures(CREEPTUMOR) | self.structures(CREEPTUMORBURROWED) | self.structures(CREEPTUMORQUEEN)
+        all_tumors = self.structures(CREEPTUMOR) | self.structures(CREEPTUMORBURROWED) | self.structures(
+            CREEPTUMORQUEEN)
         unused_tumors = all_tumors.filter(lambda x: x.tag not in self.used_creep_tumors)
         if casting_unit in all_tumors:
             unused_tumors = unused_tumors.filter(lambda x: x.tag != casting_unit.tag)
@@ -806,7 +772,7 @@ class ZergAI(sc2.BotAI):
         return score_ally > score_enemy
 
     async def micro_in_battle_combat(self):
-        ally_units = self.units.of_type(self.ARMY_IDS)
+        ally_units = self.units.of_type(self.ARMY_IDS) | self.units.of_type(self.ARMY_IDS_SPAWNS)
         ally_units_controllable = self.units.of_type(self.ARMY_IDS_COMBAT)
 
         if ally_units_controllable.amount == 0:
@@ -906,7 +872,7 @@ class ZergAI(sc2.BotAI):
                 continue
 
     async def micro_in_battle_caster(self):
-        ally_units = self.units.of_type(self.ARMY_IDS)
+        ally_units = self.units.of_type(self.ARMY_IDS) | self.units.of_type(self.ARMY_IDS_SPAWNS)
         ally_units_controllable = self.units.of_type(self.ARMY_IDS_CASTER)
 
         if ally_units_controllable.amount == 0:
@@ -975,5 +941,72 @@ class ZergAI(sc2.BotAI):
             # Return to close battle
             if enemy_attackers_close.amount != 0:
                 closest_enemy = enemy_attackers_close.closest_to(ally)
+                ally.move(closest_enemy.position)
+                continue
+
+    async def micro_in_battle_spawns(self):
+        ally_units_controllable = self.units.of_type(self.ARMY_IDS_SPAWNS)
+
+        if ally_units_controllable.amount == 0:
+            return
+
+        enemies = self.enemy_units | self.enemy_structures
+        enemy_attackers = enemies.filter(lambda unit: unit.can_attack)
+
+        if enemy_attackers.amount == 0:
+            return
+
+        for ally in ally_units_controllable:
+            # Attack
+            enemy_ground_unit_targets = enemies.filter(
+                lambda unit: ally.target_in_range(unit) and not unit.is_flying
+            )
+
+            enemy_flying_unit_targets = enemies.filter(
+                lambda unit: ally.target_in_range(unit) and unit.is_flying
+            )
+
+            if ally.can_attack_both:
+                enemy_units_target = enemy_ground_unit_targets | enemy_flying_unit_targets
+            elif ally.can_attack_ground:
+                enemy_units_target = enemy_ground_unit_targets
+            elif ally.can_attack_air:
+                enemy_units_target = enemy_flying_unit_targets
+            else:
+                enemy_units_target = None
+
+            # Can attack
+            if ally.weapon_cooldown == 0 and enemy_units_target is not None and enemy_units_target.amount != 0:
+                attackable_unit_targets = enemy_units_target.filter(
+                    lambda unit: unit.can_be_attacked and unit.type_id not in self.UNTARGETABLE_IDS
+                )
+                if attackable_unit_targets.amount != 0:
+                    lowest_unit_target = attackable_unit_targets.sorted(
+                        lambda unit: unit.health_percentage and unit.is_structure
+                    )[0]
+                    ally.attack(lowest_unit_target)
+                    continue
+
+            # Search nearest attackable target
+            enemy_ground_unit_targets = enemies.filter(
+                lambda unit: not unit.is_flying
+            )
+
+            enemy_flying_unit_targets = enemies.filter(
+                lambda unit: unit.is_flying
+            )
+
+            if ally.can_attack_both:
+                enemy_units_target = enemy_ground_unit_targets | enemy_flying_unit_targets
+            elif ally.can_attack_ground:
+                enemy_units_target = enemy_ground_unit_targets
+            elif ally.can_attack_air:
+                enemy_units_target = enemy_flying_unit_targets
+            else:
+                enemy_units_target = None
+
+            # Return to close battle
+            if enemy_units_target is not None and enemy_units_target.amount != 0:
+                closest_enemy = enemy_units_target.closest_to(ally)
                 ally.move(closest_enemy.position)
                 continue
