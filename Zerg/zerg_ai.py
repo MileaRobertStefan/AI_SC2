@@ -894,16 +894,26 @@ class ZergAI(sc2.BotAI):
             if ally.weapon_cooldown != 0 and enemy_attackers_very_close.amount != 0:
                 retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
                 retreat_points = {x for x in retreat_points if self.in_pathing_grid(x)}
+                retreat_points = {
+                    x for x in retreat_points if enemy_attackers_very_close.closest_to(x).distance_to(x) > 3
+                }
 
                 if not retreat_points:
+                    closest_enemy = enemy_attackers_very_close.closest_to(ally)
+                    ally.attack(closest_enemy.position)
                     continue
 
                 closest_enemy = enemy_attackers_very_close.closest_to(ally)
                 retreat_point = max(
                     retreat_points, key=lambda x: x.distance_to(closest_enemy) - x.distance_to(ally)
                 )
-                ally.move(retreat_point)
-                continue
+
+                if enemy_attackers_very_close.closest_to(retreat_point).distance_to(retreat_point) < 4:
+                    ally.attack(closest_enemy.position)
+                    continue
+                else:
+                    ally.move(retreat_point)
+                    continue
 
             # Return to close battle
             if enemy_units_target is not None and enemy_units_target.amount != 0:
