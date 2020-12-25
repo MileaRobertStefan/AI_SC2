@@ -839,17 +839,27 @@ class ZergAI(sc2.BotAI):
             # Retreat
             elif not self.better_army(ally_army_close, enemy_attackers_close, enemy_attackers_not_visible):
                 retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
-
-                # Filter points that are pathable
                 retreat_points = {x for x in retreat_points if self.in_pathing_grid(x)}
+                retreat_points = {
+                    x for x in retreat_points if enemy_attackers_close.closest_to(x).distance_to(x) > 3
+                }
 
                 if not retreat_points:
+                    closest_enemy = enemy_attackers_close.closest_to(ally)
+                    ally.attack(closest_enemy.position)
                     continue
 
                 closest_enemy = enemy_attackers_close.closest_to(ally)
-                retreat_point = closest_enemy.position.furthest(retreat_points)
-                ally.move(retreat_point)
-                continue
+                retreat_point = max(
+                    retreat_points, key=lambda x: x.distance_to(closest_enemy) - x.distance_to(ally)
+                )
+
+                if enemy_attackers_close.closest_to(retreat_point).distance_to(retreat_point) < 4:
+                    ally.attack(closest_enemy.position)
+                    continue
+                else:
+                    ally.move(retreat_point)
+                    continue
 
             # Attack
             enemy_ground_unit_targets = enemies.filter(
