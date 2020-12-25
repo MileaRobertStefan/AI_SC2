@@ -13,3 +13,6 @@ import math
 
 from sc2 import ActionResult
 from sc2.position import Point2
+from sc2.position import Point3
+
+from sc2.units import Units

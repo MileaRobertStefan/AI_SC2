@@ -1,5 +1,3 @@
-from sc2.position import Point3
-
 from all_imports_packages import *
 from Zerg.unit_table import *
 
@@ -69,6 +67,16 @@ class ZergAI(sc2.BotAI):
         }
 
         self.UNTARGETABLE_IDS = {ADEPTPHASESHIFT}
+
+        self.FREQUENCES = {
+            ZERGLING: 0,
+            BANELING: 0,
+            ROACH: 1,
+            RAVAGER: 0,
+            HYDRALISK: 3,
+            INFESTOR: 0,
+            SWARMHOSTMP: 3,
+        }
         self.FREQUENCES = {
             ZERGLING: 2,
             BANELING: 1,
@@ -78,15 +86,7 @@ class ZergAI(sc2.BotAI):
             INFESTOR: 4,
             SWARMHOSTMP: 3,
         }
-        self.FREQUENCES = {
-            ZERGLING: 0,
-            BANELING: 0,
-            ROACH: 0,
-            RAVAGER: 0,
-            HYDRALISK: 0,
-            INFESTOR: 0,
-            SWARMHOSTMP: 3,
-        }
+
         self.expansion_locations_list_own = []
 
         self.positions_with_creep = []
@@ -114,6 +114,13 @@ class ZergAI(sc2.BotAI):
         self.used_creep_tumors = set()
 
         self.unit_table = UnitTable()
+
+        self.cached_enemy_units = dict()  # {init.tag : (unit.pos. unit.type_id)}
+        self.enemy_units_not_visible = []
+
+        self.throw_army = False
+        self.throw_army_timer = 0
+
         # self.unit_command_uses_self_do = True
 
     def get_priority(self, unit_id):
@@ -254,6 +261,27 @@ class ZergAI(sc2.BotAI):
         if self.units(DRONE).amount < 50 and self.era >= MID_GAME:
             self.build_priorities[DRONE] = 0
             self.build_priorities["ARMY"] = 2
+
+        if self.minerals > 1000 and self.vespene > 600 \
+                and self.units(LARVA).ready.amount > 15 and self.supply_used > 180:
+            self.throw_army = True
+            self.throw_army_timer = self.time
+
+        if self.throw_army and self.throw_army_timer + 30 < self.time:
+            self.throw_army = False
+
+        # Update positions
+        for enemy in self.enemy_units:
+            self.cached_enemy_units[enemy.tag] = (enemy.position, enemy.type_id)
+
+        self.enemy_units_not_visible = []
+        for enemy_tag in self.cached_enemy_units:
+            if enemy_tag not in self.enemy_units.tags:
+                self.enemy_units_not_visible.append(self.cached_enemy_units[enemy_tag])
+
+    async def on_unit_destroyed(self, unit_tag: int):
+        if unit_tag in self.cached_enemy_units:
+            self.cached_enemy_units.pop(unit_tag)
 
     async def build_drones(self):
         if not self.get_priority(DRONE):
@@ -437,7 +465,7 @@ class ZergAI(sc2.BotAI):
     async def attack_enemy(self):
         army_units = self.units.of_type(self.ARMY_IDS)
 
-        if self.supply_army - self.units(QUEEN).amount * 2 < 70:
+        if self.supply_army - self.units(QUEEN).amount * 2 < 1:
             target = self.enemy_units
             if len(target):
                 target = target.random.position
@@ -755,7 +783,7 @@ class ZergAI(sc2.BotAI):
                 self.used_creep_tumors.add(tumor.tag)
                 break
 
-    def better_army(self, ally_army, enemy_army):
+    def better_army(self, ally_army, enemy_army, enemy_army_not_visible):
         score_ally = 0
         for ally in ally_army:
             if ally.type_id in self.ARMY_IDS_CASTER and ally.energy < self.ARMY_CASTER_MINIMUM_ENERGY[ally.type_id]:
@@ -768,6 +796,11 @@ class ZergAI(sc2.BotAI):
         for enemy in enemy_army:
             if enemy.type_id in self.unit_table.unit_power:
                 score_enemy += self.unit_table.unit_power[enemy.type_id]
+
+        for enemy in enemy_army_not_visible:
+            enemy_type_id = enemy[1]
+            if enemy_type_id in self.unit_table.unit_power:
+                score_enemy += self.unit_table.unit_power[enemy_type_id]
 
         return score_ally > score_enemy
 
@@ -796,8 +829,15 @@ class ZergAI(sc2.BotAI):
                 lambda unit: unit.distance_to(ally) < 20
             )
 
+            enemy_attackers_not_visible = filter(
+                lambda unit: unit[0].distance_to(ally.position) < 20,
+                self.enemy_units_not_visible
+            )
+
+            if self.throw_army:
+                pass
             # Retreat
-            if not self.better_army(ally_army_close, enemy_attackers_close):
+            elif not self.better_army(ally_army_close, enemy_attackers_close, enemy_attackers_not_visible):
                 retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
 
                 # Filter points that are pathable
@@ -896,10 +936,13 @@ class ZergAI(sc2.BotAI):
                 lambda unit: unit.distance_to(ally) < 20
             )
 
-            # Retreat
-            if not self.better_army(ally_army_close, enemy_attackers_close):
-                print("INFESTOR RETREATING")
+            enemy_attackers_not_visible = filter(
+                lambda unit: unit[0].distance_to(ally.position) < 20,
+                self.enemy_units_not_visible
+            )
 
+            # Retreat
+            if not self.better_army(ally_army_close, enemy_attackers_close, enemy_attackers_not_visible):
                 retreat_points = neighbors_8(ally.position, distance=2) | neighbors_8(ally.position, distance=4)
 
                 # Filter points that are pathable
