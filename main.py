@@ -11,7 +11,7 @@ def test_game(AI, race, map, realtime=False):
     run_game(maps.get(map), [
         # Bot(Race.Terran, Humanoid()),
         Bot(race, AI),
-        Computer(Race.Protoss, Difficulty.VeryHard)
+        Computer(Race.Protoss, Difficulty.CheatMoney)
     ], realtime=realtime)
 
 
