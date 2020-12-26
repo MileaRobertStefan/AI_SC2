@@ -47,7 +47,9 @@ class ZergAI(sc2.BotAI):
     def __init__(self):
         self.MAX_WORKERS = 75
         self.era = EARLY_GAME
+
         self.own_bases = []
+        self.own_bases_ready = []
         self.nr_bases = 0
 
         self.first_expansion_done = False
@@ -121,6 +123,8 @@ class ZergAI(sc2.BotAI):
         self.throw_army = False
         self.throw_army_timer = 0
 
+        self.resource_ratio = 2  # Minerals / Gas
+
         # self.unit_command_uses_self_do = True
 
     def get_priority(self, unit_id):
@@ -138,7 +142,11 @@ class ZergAI(sc2.BotAI):
         await self.first_expand()
         await self.expand()
         if self.nr_bases:
-            await self.distribute_workers()
+            if self.time < 7 * 60:
+                await self.distribute_workers()
+            else:
+                await self.distribute_workers_fav_gas()
+                await self.manage_idle_drones()
             if not self.save_for_first_expansion and not self.save_for_spawning_pool:
                 await self.build_drones()
                 await self.build_overlords()
@@ -150,31 +158,31 @@ class ZergAI(sc2.BotAI):
     async def build_buildings(self):
         # Essentials
         await self.build_extractors()
-        await self.build_building(SPAWNINGPOOL, self.own_bases[0])
+        await self.build_building(SPAWNINGPOOL, self.own_bases_ready[0])
 
         # Early Game
         if self.FREQUENCES[ZERGLING] and self.FREQUENCES[BANELING]:
-            await self.build_building(BANELINGNEST, self.own_bases[0], start_time=int(4.5 * 60))
+            await self.build_building(BANELINGNEST, self.own_bases_ready[0], start_time=int(4.5 * 60))
 
         if self.FREQUENCES[ROACH]:
-            await self.build_building(ROACHWARREN, self.own_bases[0], start_time=int(1.5 * 60))
+            await self.build_building(ROACHWARREN, self.own_bases_ready[0], start_time=int(1.5 * 60))
             await self.all_upgrades(ROACHWARREN)
 
-        await self.build_building(EVOLUTIONCHAMBER, self.own_bases[0], start_time=int(4.5 * 60),
+        await self.build_building(EVOLUTIONCHAMBER, self.own_bases_ready[0], start_time=int(4.5 * 60),
                                   required_amount=self.era)
         await self.all_upgrades(EVOLUTIONCHAMBER, exception_id_list=[RESEARCH_ZERGMELEEWEAPONSLEVEL1])
 
-        await self.upgrade(self.own_bases[0], RESEARCH_BURROW, time=4 * 60)
+        await self.upgrade(self.own_bases_ready[0], RESEARCH_BURROW, time=4 * 60)
 
         # Mid Game
-        await self.build_building(LAIR, self.own_bases[0], start_time=5 * 60)
+        await self.build_building(LAIR, self.own_bases_ready[0], start_time=5 * 60)
 
         if self.FREQUENCES[HYDRALISK]:
-            await self.build_building(HYDRALISKDEN, self.own_bases[0], start_time=5 * 60)
+            await self.build_building(HYDRALISKDEN, self.own_bases_ready[0], start_time=5 * 60)
             await self.all_upgrades(HYDRALISKDEN)
 
         if self.FREQUENCES[INFESTOR] or self.FREQUENCES[SWARMHOSTMP]:
-            await self.build_building(INFESTATIONPIT, self.own_bases[0], start_time=6 * 60)
+            await self.build_building(INFESTATIONPIT, self.own_bases_ready[0], start_time=6 * 60)
 
     async def handle_micro(self):
         await self.queens_inject()
@@ -195,11 +203,15 @@ class ZergAI(sc2.BotAI):
         else:
             self.era = LATE_GAME
 
-        self.own_bases = []
+        self.own_bases_ready = []
         for base in self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE):
+            self.own_bases_ready.append(base)
+
+        self.own_bases = []
+        for base in self.structures(HATCHERY) | self.structures(LAIR) | self.structures(HIVE):
             self.own_bases.append(base)
 
-        self.nr_bases = len(self.own_bases)
+        self.nr_bases = len(self.own_bases_ready)
 
         if self.nr_bases >= 1 and self.already_pending(HATCHERY) >= 1 and not self.first_expansion_done:
             self.first_expansion_done = True
@@ -210,6 +222,7 @@ class ZergAI(sc2.BotAI):
             self.save_for_spawning_pool = False
 
         if self.era == EARLY_GAME:
+            self.resource_ratio = 2
             self.build_priorities = {
                 DRONE: 0,
                 "ARMY": 4,
@@ -226,6 +239,7 @@ class ZergAI(sc2.BotAI):
                 "UPGRADES": 4,
             }
         elif self.era == MID_GAME:
+            self.resource_ratio = 1
             self.build_priorities = {
                 DRONE: 1,
                 "ARMY": 2,
@@ -242,6 +256,7 @@ class ZergAI(sc2.BotAI):
                 "UPGRADES": 0,
             }
         else:
+            self.resource_ratio = 1
             self.build_priorities = {
                 DRONE: 1,
                 "ARMY": 0,
@@ -334,6 +349,9 @@ class ZergAI(sc2.BotAI):
         if building_id == HYDRALISKDEN and self.structures(LAIR).ready.amount < 1:
             return
 
+        if building_id == INFESTATIONPIT and self.structures(LAIR).ready.amount < 1:
+            return
+
         if self.can_afford(building_id) and self.already_pending(building_id) \
                 + self.structures(building_id).filter(
             lambda structure: structure.type_id == building_id and structure.is_ready
@@ -346,6 +364,130 @@ class ZergAI(sc2.BotAI):
             else:
                 await self.build(building_id, near=position_towards_map_center, placement_step=1)
 
+    async def manage_idle_drones(self):
+        if not self.townhalls.exists:
+            return
+
+        mineral_fields_available = Units([], self)
+        for townhall in self.townhalls:
+            mineral_fields = self.mineral_field.closer_than(10, townhall)
+            if mineral_fields.amount:
+                mineral_fields_available.extend(mineral_fields)
+
+        if mineral_fields_available.amount == 0:
+            return
+
+        for worker in self.workers.idle:
+            mf = mineral_fields_available.closest_to(worker)
+            worker.gather(mf)
+
+    async def distribute_workers_fav_gas(self, performanceHeavy=True, only_saturate_gas=False):
+        mineral_tags = [x.tag for x in self.mineral_field]
+        geyser_tags = [x.tag for x in self.gas_buildings.ready]
+
+        worker_pool = Units([], self)
+        worker_pool_tags = set()
+
+        # find all geysers that have surplus or deficit
+        deficit_geysers = {}
+        surplus_geysers = {}
+        for g in self.gas_buildings.ready.filter(lambda x: x.vespene_contents > 0):
+            # only loop over geysers that have still gas in them
+            deficit = g.ideal_harvesters - g.assigned_harvesters
+            if deficit > 0:
+                deficit_geysers[g.tag] = {"unit": g, "deficit": deficit}
+            elif deficit < 0:
+                surplus_workers = self.workers.closer_than(10, g).filter(
+                    lambda worker:
+                        worker not in worker_pool_tags and len(worker.orders) == 1 and
+                        worker.orders[0].ability.id in [AbilityId.HARVEST_GATHER] and
+                        worker.orders[0].target in geyser_tags
+                )
+                # workerPool.extend(surplusWorkers)
+                for i in range(-deficit):
+                    if surplus_workers.amount > 0:
+                        worker = surplus_workers.pop()
+                        worker_pool.append(worker)
+                        worker_pool_tags.add(worker.tag)
+                surplus_geysers[g.tag] = {"unit": g, "deficit": deficit}
+
+        # find all townhalls that have surplus or deficit
+        deficit_townhalls = {}
+        surplus_townhalls = {}
+        if not only_saturate_gas:
+            for townhall in self.townhalls:
+                deficit = townhall.ideal_harvesters - townhall.assigned_harvesters
+                if deficit > 0:
+                    deficit_townhalls[townhall.tag] = {"unit": townhall, "deficit": deficit}
+                elif deficit < 0:
+                    surplus_workers = self.workers.closer_than(10, townhall).filter(
+                        lambda worker: worker.tag not in worker_pool_tags and
+                            len(worker.orders) == 1 and worker.orders[0].ability.id in [
+                            AbilityId.HARVEST_GATHER] and worker.orders[0].target in mineral_tags)
+                    # workerPool.extend(surplusWorkers)
+                    for i in range(-deficit):
+                        if surplus_workers.amount > 0:
+                            worker = surplus_workers.pop()
+                            worker_pool.append(worker)
+                            worker_pool_tags.add(worker.tag)
+                    surplus_townhalls[townhall.tag] = {"unit": townhall, "deficit": deficit}
+
+            if all([len(deficit_geysers) == 0, len(surplus_geysers) == 0,
+                    len(surplus_townhalls) == 0 or deficit_townhalls == 0]):
+                # cancel early if there is nothing to balance
+                return
+
+        # check if deficit in gas less or equal than what we have in surplus, else grab some
+        # more workers from surplus bases
+        deficit_gas_count = sum(
+            gas_info["deficit"] for gas_tag, gas_info in deficit_geysers.items() if gas_info["deficit"] > 0)
+        surplus_count = sum(-gas_info["deficit"]
+                            for gas_tag, gas_info in surplus_geysers.items() if gas_info["deficit"] < 0)
+        surplus_count += sum(-th_info["deficit"]
+                             for th_tag, th_info in surplus_townhalls.items() if th_info["deficit"] < 0)
+
+        if deficit_gas_count - surplus_count > 0:
+            # grab workers near the gas who are mining minerals
+            for gather_tag, gather_info in deficit_geysers.items():
+                if worker_pool.amount >= deficit_gas_count:
+                    break
+                workersNearGas = self.workers.closer_than(10, gather_info["unit"]).filter(
+                    lambda w: w.tag not in worker_pool_tags and len(w.orders) == 1 and w.orders[0].ability.id in [
+                        AbilityId.HARVEST_GATHER] and w.orders[0].target in mineral_tags)
+                while workersNearGas.amount > 0 and worker_pool.amount < deficit_gas_count:
+                    worker = workersNearGas.pop()
+                    worker_pool.append(worker)
+                    worker_pool_tags.add(worker.tag)
+
+        # now we should have enough workers in the pool to saturate all gases, and if there are workers
+        # left over, make them mine at townhalls that have mineral workers deficit
+        for gather_tag, gather_info in deficit_geysers.items():
+            if performanceHeavy:
+                # sort furthest away to closest (as the pop() function will take the last element)
+                worker_pool.sort(key=lambda x: x.distance_to(gather_info["unit"]), reverse=True)
+            for i in range(gather_info["deficit"]):
+                if worker_pool.amount > 0:
+                    worker = worker_pool.pop()
+                    if len(worker.orders) == 1 and worker.orders[0].ability.id in [AbilityId.HARVEST_RETURN]:
+                        worker.gather(gather_info["unit"], queue=True)
+                    else:
+                        worker.gather(gather_info["unit"])
+
+        if not only_saturate_gas:
+            # if we now have left over workers, make them mine at bases with deficit in mineral workers
+            for th_tag, th_info in deficit_townhalls.items():
+                if performanceHeavy:
+                    # sort furthest away to closest (as the pop() function will take the last element)
+                    worker_pool.sort(key=lambda x: x.distance_to(th_info["unit"]), reverse=True)
+                for i in range(th_info["deficit"]):
+                    if worker_pool.amount > 0:
+                        worker = worker_pool.pop()
+                        mineral_field = self.mineral_field.closer_than(10, th_info["unit"]).closest_to(worker)
+                        if len(worker.orders) == 1 and worker.orders[0].ability.id in [AbilityId.HARVEST_RETURN]:
+                            worker.gather(mineral_field, queue=True)
+                        else:
+                            worker.gather(mineral_field)
+
     async def build_extractors(self):
         if len(self.structures(SPAWNINGPOOL)) == 0:
             return
@@ -355,7 +497,7 @@ class ZergAI(sc2.BotAI):
             if len(drones) == 0:
                 continue
 
-            if self.units(DRONE).closer_than(7, hatchery).amount < 8:
+            if self.units(DRONE).closer_than(7, hatchery).amount < 8 and self.time < 6 * 60:
                 continue
 
             vespenes = self.vespene_geyser.closer_than(10.0, hatchery)
@@ -364,7 +506,10 @@ class ZergAI(sc2.BotAI):
                 if not self.can_afford(EXTRACTOR):
                     break
 
-                if self.structures(EXTRACTOR).closer_than(1.0, vespene).exists:
+                if self.structures(EXTRACTOR).closer_than(1.0, vespene).amount:
+                    break
+
+                if self.already_pending(EXTRACTOR) >= 2:
                     break
 
                 worker = self.select_build_worker(vespene.position)
@@ -383,12 +528,12 @@ class ZergAI(sc2.BotAI):
         nr_demanded_queens = [self.nr_bases + 1, self.nr_bases * 1 + 2, self.nr_bases * 1 + 2]
         nr_queens = self.units(QUEEN).ready.amount
 
-        for base in self.own_bases:
+        for base in self.own_bases_ready:
             if self.can_afford(QUEEN) and nr_queens < nr_demanded_queens[self.era] and base.is_idle:
                 base.train(QUEEN)
 
     async def queens_inject(self):
-        for base in self.own_bases:
+        for base in self.own_bases_ready:
             queens = self.units(QUEEN).idle
             if len(queens) == 0:
                 return
@@ -502,6 +647,11 @@ class ZergAI(sc2.BotAI):
         if self.unit_in_queue:
             i = self.selected_unit_index_in_queue
             morph_from_id = self.MORPH_FROM_IDS[i]
+
+            if morph_from_id != LARVA and self.units(morph_from_id).amount == 0:
+                self.unit_in_queue = False
+                self.selected_unit_index_in_queue = None
+
             army_id = self.ARMY_IDS[i]
             if await self.evolve_units(morph_from_id, army_id):
                 self.unit_in_queue = False
