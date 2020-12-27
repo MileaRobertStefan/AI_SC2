@@ -45,7 +45,7 @@ def neighbors_8(position, distance=1):
 
 class ZergAI(sc2.BotAI):
     def __init__(self):
-        self.MAX_WORKERS = 75
+        self.MAX_WORKERS = 70
         self.era = EARLY_GAME
 
         self.own_bases = []
@@ -142,7 +142,7 @@ class ZergAI(sc2.BotAI):
         await self.first_expand()
         await self.expand()
         if self.nr_bases:
-            if self.time < 7 * 60:
+            if self.time < 7 * 60 or self.minerals / (self.vespene + EPSILON) < self.resource_ratio:
                 await self.distribute_workers()
             else:
                 await self.distribute_workers_fav_gas()
@@ -526,6 +526,7 @@ class ZergAI(sc2.BotAI):
             return
 
         nr_demanded_queens = [self.nr_bases + 1, self.nr_bases * 1 + 2, self.nr_bases * 1 + 2]
+        nr_demanded_queens = [min(x, 6) for x in nr_demanded_queens]
         nr_queens = self.units(QUEEN).ready.amount
 
         for base in self.own_bases_ready:
@@ -658,7 +659,7 @@ class ZergAI(sc2.BotAI):
                 self.selected_unit_index_in_queue = None
 
         else:
-            # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR]
+            # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR, SWARMHOST]
 
             can_make = dict()
             if self.structures(SPAWNINGPOOL).ready.amount > 0:
@@ -762,7 +763,7 @@ class ZergAI(sc2.BotAI):
             if EFFECT_SPAWNLOCUSTS not in abilities:
                 continue
 
-            possible_targets = self.enemy_units.closer_than(10, swarmhost)
+            possible_targets = self.enemy_units.closer_than(20, swarmhost)
             if possible_targets.amount == 0:
                 continue
 
