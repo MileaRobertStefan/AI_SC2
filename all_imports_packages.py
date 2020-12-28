@@ -18,3 +18,6 @@ from sc2.position import Point3
 from sc2.units import Units
 from sc2 import Result
 from sc2.unit import Unit
+
+import os
+import shutil
