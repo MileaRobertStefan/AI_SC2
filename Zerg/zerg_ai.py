@@ -57,22 +57,23 @@ class ZergAI(sc2.BotAI):
         self.save_for_spawning_pool = False
 
         self.MORPH_FROM_IDS = [
-            LARVA, ZERGLING, LARVA, ROACH, LARVA, LARVA, LARVA, HYDRALISK, LARVA, LARVA, CORRUPTOR, LARVA
+            LARVA, ZERGLING, LARVA, ROACH, LARVA, LARVA, LARVA, HYDRALISK, LARVA, LARVA, CORRUPTOR, LARVA, LARVA
         ]
         self.ARMY_IDS = [
             ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR, SWARMHOSTMP, LURKERMP, MUTALISK, CORRUPTOR,
-            BROODLORD, ULTRALISK
+            BROODLORD, ULTRALISK, VIPER
         ]
         self.ARMY_IDS_RANGED = [ROACH, RAVAGER, HYDRALISK, LURKERMP, MUTALISK, CORRUPTOR, BROODLORD]
         self.ARMY_IDS_COMBAT = [
             ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, LURKERMP, MUTALISK, CORRUPTOR, BROODLORD, ULTRALISK
         ]
-        self.ARMY_IDS_CASTER = [INFESTOR, SWARMHOSTMP]
+        self.ARMY_IDS_CASTER = [INFESTOR, SWARMHOSTMP, VIPER]
         self.ARMY_IDS_SPAWNS = [BROODLING, LOCUSTMP, LOCUSTMPFLYING]
 
         self.ARMY_CASTER_MINIMUM_ENERGY = {
             INFESTOR: 75,
             SWARMHOSTMP: 0,
+            VIPER: 75,
         }
 
         self.UNTARGETABLE_IDS = {ADEPTPHASESHIFT}
@@ -86,10 +87,11 @@ class ZergAI(sc2.BotAI):
             INFESTOR: 4,
             SWARMHOSTMP: 3,
             LURKERMP: 5,
-            MUTALISK: 10,
+            MUTALISK: 5,
             CORRUPTOR: 10,
             BROODLORD: 10,
             ULTRALISK: 4,
+            VIPER: 3,
         }
 
         self.expansion_locations_list_own = []
@@ -126,7 +128,7 @@ class ZergAI(sc2.BotAI):
 
         self.unit_table = UnitTable()
 
-        self.cached_enemy_units = dict()  # {init.tag : (unit.pos. unit.type_id)}
+        self.cached_enemy_units = dict()  # {unit.tag : (unit.pos. unit.type_id)}
         self.enemy_units_not_visible = []
 
         self.throw_army = False
@@ -777,6 +779,9 @@ class ZergAI(sc2.BotAI):
             if self.structures(ULTRALISKCAVERN).ready.amount:
                 can_make[ULTRALISK] = True
 
+            if self.structures(HIVE).ready.amount:
+                can_make[VIPER] = True
+
             freq_sum = 0
             for unit in self.FREQUENCES:
                 if unit in can_make:
@@ -804,6 +809,7 @@ class ZergAI(sc2.BotAI):
         await self.infestor_fungal_growth()
         await self.swarmhost_spawn_locusts()
         await self.lurker_borrow()
+        await self.viper_abduct()
 
     async def ravager_corrosive_bile(self):
         for ravager in self.units(RAVAGER):
@@ -901,6 +907,25 @@ class ZergAI(sc2.BotAI):
                 continue
 
             lurker(BURROWUP_LURKER)
+
+    async def viper_abduct(self):
+        for viper in self.units(VIPER):
+            abilities = await self.get_available_abilities(viper)
+            if EFFECT_ABDUCT not in abilities:
+                continue
+
+            enemies_local = self.enemy_units.closer_than(11, viper)
+            if enemies_local.amount == 0:
+                continue
+
+            enemies_local = enemies_local.filter(lambda unit: self.unit_table.unit_power[unit.type_id] >= 300)
+            if enemies_local.amount == 0:
+                continue
+
+            enemies_local = enemies_local.sorted(lambda unit: self.unit_table.unit_power[unit.type_id], reverse=True)
+            target = enemies_local[0]
+
+            viper(EFFECT_ABDUCT, target)
 
     async def all_upgrades(self, building_id, time=0, exception_id_list=None):
         # useless_abilities = {CANCEL_BUILDINPROGRESS, CANCEL_QUEUE5, RALLY_HATCHERY_UNITS,
