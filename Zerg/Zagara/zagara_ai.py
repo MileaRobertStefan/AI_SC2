@@ -129,7 +129,7 @@ class ZagaraAI(sc2.BotAI):
             self.builder.resource_ratio = 2
             self.builder.priorities = {
                 DRONE: 1,
-                "ARMY": 4,
+                "ARMY": 2,
                 SPAWNINGPOOL: 0,
                 ROACHWARREN: 2,
                 BANELINGNEST: 2,
@@ -224,7 +224,7 @@ class ZagaraAI(sc2.BotAI):
             self.builder.priorities[DRONE] = 2
             self.builder.priorities["ARMY"] = 0
 
-        countered_finish = True
+        countered_finish = self.enemy_race != Race.Terran
         if countered_finish:
             self.army.FREQUENCES = {
                 ZERGLING: 1,
