@@ -1,6 +1,7 @@
 from all_imports_packages import *
 from all_imports_ai import *
 
+from Zerg.Zagara.zagara_ai import ZagaraAI
 
 class Humanoid(sc2.BotAI):
     async def on_step(self, iteration: int):
@@ -36,7 +37,7 @@ def test_game(AI, race, map, realtime=False):
 
     result = run_game(
         maps.get(map), [
-            # Bot(Race.Terran, Humanoid()),
+            #Bot(Race.Zerg, CreepyBot()),
             Bot(race, AI),
             Computer(enemy_race, difficulty)
         ],
@@ -54,5 +55,4 @@ def test_game(AI, race, map, realtime=False):
 
 
 if __name__ == "__main__":
-    test_game(ZergAI(), Race.Zerg, "TritonLE")
-    # test_game(SentdeBot(), Race.Protoss, MAP_NAME, realtime=False)
+    test_game(ZagaraAI(), Race.Zerg, "TritonLE")
