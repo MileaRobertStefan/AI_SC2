@@ -1,5 +1,6 @@
 from all_imports_packages import *
 
+
 class Builder :
     def __init__(self,ai):
         self.ai = ai
@@ -40,8 +41,13 @@ class Builder :
         await self.build_mid_game()
         await self.build_late_game()
 
-
     async def build_early_game(self):
+        if self.ai.army.FREQUENCES[ZERGLING]:
+            await self.ai.all_upgrades(SPAWNINGPOOL, time=int(3.5*60))
+
+        if self.ai.army.FREQUENCES[BANELING]:
+            await self.ai.all_upgrades(BANELINGNEST, time=int(4*60))
+
         if self.ai.army.FREQUENCES[ZERGLING] and self.ai.army.FREQUENCES[BANELING]:
             await self.build_building(BANELINGNEST, self.ai.own_bases_ready[0], start_time=int(3.5 * 60))
 
@@ -184,8 +190,3 @@ class Builder :
                     break
 
                 worker.build_gas(vespene)
-            
-
-
-    pass
-

@@ -1,5 +1,6 @@
 from all_imports_packages import *
 
+
 def get_positions_around_unit(unit, min_range=0, max_range=500, step_size=1, location_amount=32):
     loc = unit.position.to2
 

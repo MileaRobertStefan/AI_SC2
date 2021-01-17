@@ -131,7 +131,7 @@ class UnitTable:
             SWARMHOSTBURROWEDMP: [(VIPER, 1 / 2), (BROODLORD, 1 / 2)],
 
             # Protoss
-            ZEALOT: [(ROACH, 1 / 1), (BROODLORD, 1 / 10), (BANELING, 2 / 1), (ULTRALISK, 1 / 10), (LURKER, 1 / 3)],
+            ZEALOT: [(ROACH, 1 / 1), (BROODLORD, 1 / 10), (BANELING, 2 / 1), (ULTRALISK, 1 / 10), (LURKERMP, 1 / 3)],
             STALKER: [(HYDRALISK, 1 / 1), (ZERGLING, 2 / 1), (BANELING, 2 / 1)],
             ADEPT: [(ROACH, 1 / 1), (BANELING, 2 / 1)],
             SENTRY: [(RAVAGER, 1 / 1), (ULTRALISK, 1 / 5), (BROODLORD, 1 / 5), (ZERGLING, 2 / 1)],

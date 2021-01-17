@@ -3,6 +3,7 @@ from all_imports_ai import *
 
 from Zerg.Zagara.zagara_ai import ZagaraAI
 
+
 class Humanoid(sc2.BotAI):
     async def on_step(self, iteration: int):
         pass
@@ -37,7 +38,7 @@ def test_game(AI, race, map, realtime=False):
 
     result = run_game(
         maps.get(map), [
-            #Bot(Race.Zerg, CreepyBot()),
+            # Bot(Race.Zerg, Humanoid()),
             Bot(race, AI),
             Computer(enemy_race, difficulty)
         ],

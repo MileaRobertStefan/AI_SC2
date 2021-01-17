@@ -101,8 +101,11 @@ class ZagaraAI(sc2.BotAI):
             self.era = EARLY_GAME
         elif self.time < 9 * 60:
             self.era = MID_GAME
+            self.unit_table.unit_power[ZERGLING] = 100
         else:
             self.era = LATE_GAME
+            self.unit_table.unit_power[ZERGLING] = 150
+            self.unit_table.unit_power[BANELING] = 150
 
         self.own_bases_ready = []
         for base in self.structures(HATCHERY).ready | self.structures(LAIR) | self.structures(HIVE):
@@ -220,6 +223,81 @@ class ZagaraAI(sc2.BotAI):
         if enemy_units.amount and self.better_army(ally_units, enemy_units, self.enemy_units_not_visible) < 0.65:
             self.builder.priorities[DRONE] = 2
             self.builder.priorities["ARMY"] = 0
+
+        countered_finish = True
+        if countered_finish:
+            self.army.FREQUENCES = {
+                ZERGLING: 1,
+                BANELING: 0,
+                ROACH: 2,
+                RAVAGER: 1,
+                HYDRALISK: 2,
+                INFESTOR: 0,
+                SWARMHOSTMP: 0,
+                LURKERMP: 0,
+                MUTALISK: 0,
+                CORRUPTOR: 0,
+                BROODLORD: 0,
+                ULTRALISK: 0,
+                VIPER: 0,
+                OVERSEER: 0,
+            }
+
+            for enemy_tag in self.cached_enemy_units:
+                unit_type = self.cached_enemy_units[enemy_tag][1]
+
+                if unit_type not in self.unit_table.units_counter_by:
+                    continue
+
+                for unit_freq, freq in self.unit_table.units_counter_by[unit_type]:
+                    desired_freq = freq + 0.0
+                    if self.era == MID_GAME and unit_freq in [ZERGLING, BANELING]:
+                        desired_freq /= 2
+
+                    if self.era == MID_GAME and unit_freq in [ZERGLING, BANELING]:
+                        desired_freq /= 8
+
+                    self.army.FREQUENCES[unit_freq] += desired_freq
+
+                    if unit_freq == BANELING:
+                        self.army.FREQUENCES[ZERGLING] += desired_freq
+
+                    if unit_freq == RAVAGER:
+                        self.army.FREQUENCES[ROACH] += desired_freq
+
+                    if unit_freq == LURKERMP:
+                        self.army.FREQUENCES[HYDRALISK] += desired_freq
+
+                    if unit_freq == BROODLORD:
+                        self.army.FREQUENCES[CORRUPTOR] += desired_freq
+
+        else:
+            self.army.FREQUENCES = {
+                ZERGLING: 2,
+                BANELING: 1,
+                ROACH: 20,
+                RAVAGER: 4,
+                HYDRALISK: 10,
+                INFESTOR: 4,
+                SWARMHOSTMP: 3,
+                LURKERMP: 5,
+                MUTALISK: 5,
+                CORRUPTOR: 10,
+                BROODLORD: 10,
+                ULTRALISK: 4,
+                VIPER: 3,
+                OVERSEER: 3,
+            }
+
+        i = 0
+        for unit_type in self.army.FREQUENCES:
+            if self.army.FREQUENCES[unit_type]:
+                print(unit_type, ":", self.army.FREQUENCES[unit_type], end="   |   ")
+                i += 1
+
+                if i % 4 == 0:
+                    print()
+        print()
 
     async def on_unit_destroyed(self, unit_tag: int):
         if unit_tag in self.cached_enemy_units:
@@ -479,6 +557,7 @@ class ZagaraAI(sc2.BotAI):
     async def attack_enemy(self):
         if self.time < 60 * 3:
             return
+
         # if self.defending:
         #     return
 
@@ -496,7 +575,7 @@ class ZagaraAI(sc2.BotAI):
                     if base.distance_to(target) <= 20:
                         for creature in army_units.idle:
                             creature.attack(target)
-                #
+
                 # if self.start_location.distance2_to(target) <= \
                 #   self.start_location.distance2_to(self.game_info.map_center):
                 #     for creature in army_units.idle:
@@ -512,8 +591,15 @@ class ZagaraAI(sc2.BotAI):
 
         target = self.enemy_structures.random_or(self.enemy_start_locations[0]).position
 
+        army_units_combat = self.units.of_type(self.army.ARMY_IDS_COMBAT)
+        army_units_combat = army_units_combat.filter(lambda unit: unit.type_id != QUEEN)
+
         for creature in army_units.idle:
-            creature.attack(target)
+            if creature.type_id in self.army.ARMY_IDS_CASTER and army_units_combat.amount:
+                closest_ally = army_units_combat.closest_to(creature)
+                creature.move(closest_ally.position)
+            else:
+                creature.attack(target)
 
     async def build_units_probabilistic(self):
         if self.minerals < 100:
@@ -536,8 +622,6 @@ class ZagaraAI(sc2.BotAI):
                 self.army.selected_unit_index_in_queue = None
 
         else:
-            # [ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, INFESTOR, SWARMHOST]
-
             can_make = dict()
             if self.structures(SPAWNINGPOOL).ready.amount:
                 can_make[ZERGLING] = True
@@ -554,8 +638,11 @@ class ZagaraAI(sc2.BotAI):
                 can_make[HYDRALISK] = True
 
             if self.structures(INFESTATIONPIT).ready.amount:
-                can_make[INFESTOR] = True
-                can_make[SWARMHOSTMP] = True
+                if self.units(INFESTOR).amount + self.units(INFESTORBURROWED).amount < self.army.max_units[INFESTOR]:
+                    can_make[INFESTOR] = True
+
+                if self.units(SWARMHOSTMP).amount + self.units(SWARMHOSTBURROWEDMP).amount < self.army.max_units[SWARMHOSTMP]:
+                    can_make[SWARMHOSTMP] = True
 
             if self.structures(LURKERDENMP).ready.amount:
                 can_make[LURKERMP] = True
@@ -569,6 +656,13 @@ class ZagaraAI(sc2.BotAI):
 
             if self.structures(ULTRALISKCAVERN).ready.amount:
                 can_make[ULTRALISK] = True
+
+            if self.structures(HIVE).ready.amount and self.units(VIPER).amount < self.army.max_units[VIPER]:
+                can_make[VIPER] = True
+
+            if self.structures(LAIR).ready.amount and self.units(OVERLORD).amount \
+                    and self.units(OVERSEER).amount < self.army.max_units[OVERSEER]:
+                can_make[OVERSEER] = True
 
             freq_sum = 0
             for unit in self.army.FREQUENCES:
@@ -598,6 +692,7 @@ class ZagaraAI(sc2.BotAI):
         await self.infestor_fungal_growth()
         await self.swarmhost_spawn_locusts()
         await self.lurker_borrow()
+        await self.viper_abduct()
 
     async def ravager_corrosive_bile(self):
         for ravager in self.units(RAVAGER):
@@ -695,6 +790,25 @@ class ZagaraAI(sc2.BotAI):
                 continue
 
             lurker(BURROWUP_LURKER)
+
+    async def viper_abduct(self):
+        for viper in self.units(VIPER):
+            abilities = await self.get_available_abilities(viper)
+            if EFFECT_ABDUCT not in abilities:
+                continue
+
+            enemies_local = self.enemy_units.closer_than(11, viper)
+            if enemies_local.amount == 0:
+                continue
+
+            enemies_local = enemies_local.filter(lambda unit: self.unit_table.unit_power[unit.type_id] >= 300)
+            if enemies_local.amount == 0:
+                continue
+
+            enemies_local = enemies_local.sorted(lambda unit: self.unit_table.unit_power[unit.type_id], reverse=True)
+            target = enemies_local[0]
+
+            viper(EFFECT_ABDUCT, target)
 
     async def all_upgrades(self, building_id, time=0, exception_id_list=None):
         # useless_abilities = {CANCEL_BUILDINPROGRESS, CANCEL_QUEUE5, RALLY_HATCHERY_UNITS,
