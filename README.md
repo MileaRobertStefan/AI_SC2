@@ -54,7 +54,7 @@ using particular abilities, focus attack on enemies, special behavior for the
 type of unit, and many more!)
 
 
-### Results
+##Results
 
 Win rates vs the Official StarCraft II Bots:
 
